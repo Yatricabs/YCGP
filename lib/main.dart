@@ -102,7 +102,7 @@ class _RideScreenState extends State<RideScreen> {
 
   double get distanceCoveredKm => _totalDistanceMeters / 1000.0;
 
-  String get distanceText => '${distanceCoveredKm.toStringAsFixed(1)} KM';
+  String get distanceText => '${distanceCoveredKm.toStringAsFixed(1)}km';
 
   @override
   void initState() {
@@ -111,62 +111,91 @@ class _RideScreenState extends State<RideScreen> {
     _initializeRide();
   }
 
-  /// Draws a small white car-shaped marker (with a green windshield accent)
-  /// entirely in code, so no external image asset is needed.
+  /// Draws a small white top-view car marker entirely in code (no external
+  /// image asset needed). The canvas is rendered at a higher pixel
+  /// resolution for crisp edges, but `width`/`height` below pin the actual
+  /// on-map size in logical pixels so it stays small and consistent across
+  /// every phone's screen density (this is what was missing before and
+  /// caused the oversized marker).
   Future<void> _generateCarIcon() async {
-    const double size = 110;
+    const double canvasSize = 240; // high-res drawing surface
+    const double onMapWidth = 30; // actual logical size shown on the map
+    const double onMapHeight = 56;
+
     final ui.PictureRecorder recorder = ui.PictureRecorder();
-    final Canvas canvas = Canvas(recorder, Rect.fromLTWH(0, 0, size, size));
-
-    final Paint shadowPaint = Paint()
-      ..color = Colors.black.withValues(alpha: 0.28)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
-    canvas.drawCircle(Offset(size / 2, size / 2 + 5), size / 2.6, shadowPaint);
-
-    final RRect body = RRect.fromRectAndRadius(
-      Rect.fromCenter(
-        center: Offset(size / 2, size / 2),
-        width: size * 0.52,
-        height: size * 0.86,
-      ),
-      const Radius.circular(16),
+    final Canvas canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, canvasSize, canvasSize),
     );
-    canvas.drawRRect(body, Paint()..color = Colors.white);
-    canvas.drawRRect(
+    final double cx = canvasSize / 2;
+    final double cy = canvasSize / 2;
+
+    // Soft drop shadow under the car.
+    final Paint shadowPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.30)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx, cy + 8), width: 92, height: 150),
+      shadowPaint,
+    );
+
+    // Top-view sedan silhouette: rounded nose at top, straight sides,
+    // slightly rounded tail at bottom.
+    final Path body = Path()
+      ..moveTo(cx, cy - 96) // front-center (nose tip)
+      ..quadraticBezierTo(cx + 44, cy - 96, cx + 44, cy - 60)
+      ..lineTo(cx + 44, cy + 68)
+      ..quadraticBezierTo(cx + 44, cy + 96, cx + 16, cy + 96)
+      ..lineTo(cx - 16, cy + 96)
+      ..quadraticBezierTo(cx - 44, cy + 96, cx - 44, cy + 68)
+      ..lineTo(cx - 44, cy - 60)
+      ..quadraticBezierTo(cx - 44, cy - 96, cx, cy - 96)
+      ..close();
+
+    canvas.drawPath(body, Paint()..color = Colors.white);
+    canvas.drawPath(
       body,
       Paint()
         ..color = Colors.black87
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3,
+        ..strokeWidth = 5,
     );
 
+    // Windshield (front glass).
     final RRect windshield = RRect.fromRectAndRadius(
-      Rect.fromCenter(
-        center: Offset(size / 2, size / 2 - size * 0.16),
-        width: size * 0.32,
-        height: size * 0.24,
-      ),
-      const Radius.circular(6),
+      Rect.fromCenter(center: Offset(cx, cy - 48), width: 62, height: 34),
+      const Radius.circular(8),
     );
-    canvas.drawRRect(windshield, Paint()..color = YatriColors.green);
+    canvas.drawRRect(windshield, Paint()..color = const Color(0xFFB9C2C9));
 
+    // Rear windshield.
     final RRect rearWindow = RRect.fromRectAndRadius(
-      Rect.fromCenter(
-        center: Offset(size / 2, size / 2 + size * 0.24),
-        width: size * 0.28,
-        height: size * 0.16,
-      ),
-      const Radius.circular(5),
+      Rect.fromCenter(center: Offset(cx, cy + 74), width: 54, height: 26),
+      const Radius.circular(7),
     );
-    canvas.drawRRect(rearWindow, Paint()..color = YatriColors.green.withValues(alpha: 0.7));
+    canvas.drawRRect(rearWindow, Paint()..color = const Color(0xFFB9C2C9));
+
+    // Cabin/roof strip in the middle.
+    final RRect roof = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(cx, cy + 6), width: 58, height: 74),
+      const Radius.circular(10),
+    );
+    canvas.drawRRect(roof, Paint()..color = const Color(0xFFF1F3F4));
 
     final ui.Picture picture = recorder.endRecording();
-    final ui.Image image = await picture.toImage(size.toInt(), size.toInt());
+    final ui.Image image = await picture.toImage(
+      canvasSize.toInt(),
+      canvasSize.toInt(),
+    );
     final ByteData? bytes = await image.toByteData(format: ui.ImageByteFormat.png);
     if (bytes == null || !mounted) return;
 
     setState(() {
-      _carIcon = BitmapDescriptor.bytes(bytes.buffer.asUint8List());
+      _carIcon = BitmapDescriptor.bytes(
+        bytes.buffer.asUint8List(),
+        width: onMapWidth,
+        height: onMapHeight,
+      );
     });
   }
 
@@ -270,12 +299,19 @@ class _RideScreenState extends State<RideScreen> {
         );
 
         // Billing protection:
-        // 1) Ignore poor GPS fixes.
-        // 2) Ignore tiny GPS drift (< 3 m).
-        // 3) Ignore an impossible jump (> 100 m in a 2-sec sample).
-        if (current.accuracy <= 50 &&
-            segmentMeters >= 3 &&
-            segmentMeters <= 100) {
+        // 1) Ignore very poor GPS fixes (accuracy worse than 100 m).
+        // 2) Ignore essentially-zero movement (< 1 m) - this is GPS jitter
+        //    while the phone is sitting still, NOT a real-world minimum
+        //    speed. (The old 3 m floor silently discarded normal walking
+        //    speed - ~2-2.5 m every 2 sec - which is why the total stayed
+        //    stuck at 0.0 km even while actually moving.)
+        // 3) Ignore an impossible jump (> 400 m in a 2-sec sample, i.e.
+        //    faster than ~720 km/h) - this is a GPS glitch/teleport, not
+        //    real movement.
+        final bool accuracyOk = current.accuracy <= 100;
+        final bool isRealMovement = segmentMeters >= 1 && segmentMeters <= 400;
+
+        if (accuracyOk && isRealMovement) {
           _totalDistanceMeters += segmentMeters;
           _routePoints.add(
             LatLng(current.latitude, current.longitude),
