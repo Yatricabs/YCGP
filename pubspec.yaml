@@ -1,0 +1,23 @@
+name: yatri_cabs_gps_billing
+description: YATRI CABS GPS live distance billing screen.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_maps_flutter: 2.13.1
+  geolocator: ^14.0.2
+
+flutter:
+  uses-material-design: true
+
+# FlutLab currently uses Dart 3.8.1.
+# google_maps_flutter is federated and automatically pulls its web implementation.
+# Pin the web implementation to a Dart-3.8-compatible release so Android APK builds
+# do not try to resolve the newer web package that requires Dart 3.9+.
+dependency_overrides:
+  google_maps_flutter_web: 0.5.14+2
