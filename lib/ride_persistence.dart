@@ -27,6 +27,8 @@ class RidePersistence {
   static const String _keyTotalDistance = 'ride_total_distance_m';
   static const String _keyPrevLat = 'ride_prev_lat';
   static const String _keyPrevLng = 'ride_prev_lng';
+  static const String _keyPrevAltitude = 'ride_prev_altitude';
+  static const String _keyPrevFixTimeMillis = 'ride_prev_fix_time_ms';
   static const String _keyRoutePoints = 'ride_route_points';
 
   /// Called after every GPS fix that counts toward billing. Cheap enough
@@ -36,6 +38,8 @@ class RidePersistence {
     required double totalDistanceMeters,
     required double previousLat,
     required double previousLng,
+    required double previousAltitude,
+    required DateTime previousFixTime,
     required List<LatLng> routePoints,
   }) async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -43,6 +47,11 @@ class RidePersistence {
     await prefs.setDouble(_keyTotalDistance, totalDistanceMeters);
     await prefs.setDouble(_keyPrevLat, previousLat);
     await prefs.setDouble(_keyPrevLng, previousLng);
+    await prefs.setDouble(_keyPrevAltitude, previousAltitude);
+    await prefs.setInt(
+      _keyPrevFixTimeMillis,
+      previousFixTime.millisecondsSinceEpoch,
+    );
     await prefs.setString(_keyRoutePoints, _encodeRoute(routePoints));
   }
 
@@ -61,10 +70,21 @@ class RidePersistence {
       return null;
     }
 
+    // Older saved data (from before altitude/timestamp were tracked)
+    // won't have these - fall back to sane defaults rather than losing
+    // the whole recovery.
+    final double prevAltitude = prefs.getDouble(_keyPrevAltitude) ?? 0.0;
+    final int? prevFixMillis = prefs.getInt(_keyPrevFixTimeMillis);
+    final DateTime prevFixTime = prevFixMillis != null
+        ? DateTime.fromMillisecondsSinceEpoch(prevFixMillis)
+        : DateTime.now();
+
     return RideProgress(
       totalDistanceMeters: totalDistance,
       previousLat: prevLat,
       previousLng: prevLng,
+      previousAltitude: prevAltitude,
+      previousFixTime: prevFixTime,
       routePoints: _decodeRoute(prefs.getString(_keyRoutePoints)),
     );
   }
@@ -77,6 +97,8 @@ class RidePersistence {
     await prefs.remove(_keyTotalDistance);
     await prefs.remove(_keyPrevLat);
     await prefs.remove(_keyPrevLng);
+    await prefs.remove(_keyPrevAltitude);
+    await prefs.remove(_keyPrevFixTimeMillis);
     await prefs.remove(_keyRoutePoints);
   }
 
@@ -112,11 +134,15 @@ class RideProgress {
     required this.totalDistanceMeters,
     required this.previousLat,
     required this.previousLng,
+    required this.previousAltitude,
+    required this.previousFixTime,
     required this.routePoints,
   });
 
   final double totalDistanceMeters;
   final double previousLat;
   final double previousLng;
+  final double previousAltitude;
+  final DateTime previousFixTime;
   final List<LatLng> routePoints;
 }

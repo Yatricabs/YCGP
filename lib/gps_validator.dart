@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:geolocator/geolocator.dart';
 
 /// Decides whether a newly-received GPS fix should be counted toward the
@@ -18,6 +20,8 @@ import 'package:geolocator/geolocator.dart';
 ///  - GPS position jitter while the vehicle is genuinely stationary
 ///    (a long roadside stop, a traffic jam) - must not silently bill km
 ///  - Single wild "spike" fixes (one bad reading far from the real path)
+///  - Elevation change on hill roads, which flat great-circle distance
+///    alone quietly under-counts
 class GpsFixValidator {
   /// A fix this poor is more likely reflection/multipath noise than a
   /// real reading - even accounting for hills/forest being worse than
@@ -37,10 +41,19 @@ class GpsFixValidator {
   /// residual GPS drift while stationary must not add to the bill.
   static const double stationarySpeedThresholdMps = 0.5; // ~1.8 km/h
 
+  /// Caps how much of a reported altitude change is trusted per segment,
+  /// as a fraction of the horizontal distance covered. Phone-GPS altitude
+  /// is noisier than lat/lng, so an elevation jump is only trusted up to
+  /// what a genuinely steep hill road (~35% grade - steeper than almost
+  /// any real road) could produce; anything beyond that is barometric/GPS
+  /// altitude noise, not real climbing, and is clamped rather than billed.
+  static const double maxAltitudeGradeRatio = 0.35;
+
   GpsFixResult evaluate({
     required Position current,
     required double previousLat,
     required double previousLng,
+    required double previousAltitude,
     required DateTime previousFixTime,
   }) {
     // Fraud protection: Android/iOS both flag positions coming from a
@@ -61,15 +74,20 @@ class GpsFixValidator {
       );
     }
 
-    final double segmentMeters = Geolocator.distanceBetween(
+    final double horizontalMeters = Geolocator.distanceBetween(
       previousLat,
       previousLng,
       current.latitude,
       current.longitude,
     );
 
+    // Use the GPS chip's own fix timestamp, not wall-clock processing
+    // time - the two can drift apart if the app was briefly paused (e.g.
+    // returning from the PiP floating window), which would otherwise
+    // distort the implied-speed calculation below.
     final double elapsedSeconds =
-        DateTime.now().difference(previousFixTime).inMilliseconds / 1000.0;
+        current.timestamp.difference(previousFixTime).inMilliseconds /
+            1000.0;
 
     if (elapsedSeconds <= 0.1) {
       // Guards against a divide-by-zero / duplicate fix delivered twice.
@@ -85,12 +103,28 @@ class GpsFixValidator {
     // the drift happens to average out to a plausible low speed anyway).
     final bool reportedAsStationary =
         current.speed >= 0 && current.speed < stationarySpeedThresholdMps;
-    if (reportedAsStationary && segmentMeters < 5) {
+    if (reportedAsStationary && horizontalMeters < 5) {
       return const GpsFixResult(
         countTowardBilling: false,
         reason: 'Ignored: vehicle stationary, GPS drift only',
       );
     }
+
+    // Elevation-aware (3D) distance: on hill roads, flat great-circle
+    // distance alone quietly under-counts a climb or descent. Altitude
+    // is noisier than lat/lng, so the change is clamped to what a very
+    // steep real road could plausibly produce before being combined in.
+    final double rawAltitudeDiff = current.altitude - previousAltitude;
+    final double maxTrustedAltitudeDiff =
+        horizontalMeters * maxAltitudeGradeRatio;
+    final double clampedAltitudeDiff = rawAltitudeDiff.clamp(
+      -maxTrustedAltitudeDiff,
+      maxTrustedAltitudeDiff,
+    );
+    final double segmentMeters = math.sqrt(
+      (horizontalMeters * horizontalMeters) +
+          (clampedAltitudeDiff * clampedAltitudeDiff),
+    );
 
     final double impliedSpeedMps = segmentMeters / elapsedSeconds;
     if (impliedSpeedMps > maxPlausibleSpeedMetersPerSecond) {

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:disable_battery_optimization/disable_battery_optimization.dart';
 import 'package:floating/floating.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geolocator_android/geolocator_android.dart';
@@ -66,7 +67,12 @@ class _RideScreenState extends State<RideScreen> {
   StreamSubscription<Position>? _positionSubscription;
   double? _previousLat;
   double? _previousLng;
+  double? _previousAltitude;
   DateTime? _previousFixTime;
+  bool _isSlowPollMode = false;
+  DateTime? _lastPollModeSwitchAt;
+  bool _highDistanceWarningLogged = false;
+  Timer? _watchdogTimer;
   final Floating _floating = Floating();
   final GpsFixValidator _validator = GpsFixValidator();
   final RidePersistence _persistence = RidePersistence();
@@ -282,6 +288,57 @@ class _RideScreenState extends State<RideScreen> {
     } catch (error) {
       debugPrint('Battery optimization exemption request failed: $error');
     }
+
+    // Standard Android battery-optimization exemption (above) does NOT
+    // cover OEM-specific background restrictions - Xiaomi's MIUI,
+    // Oppo/Realme's ColorOS, Vivo's FuntouchOS, and some Samsung builds
+    // each ship their own separate "auto-start"/"protected apps" list
+    // that sits entirely outside the standard Android API. There is no
+    // programmatic way to enable these - only to guide the driver to the
+    // right settings screen. Both calls are safe no-ops on devices/OEMs
+    // that don't have a matching restriction.
+    try {
+      await DisableBatteryOptimization.showEnableAutoStartSettings(
+        'Allow Auto-Start',
+        'To keep tracking your ride reliably in the background, please '
+            'allow YATRI CABS to auto-start on this phone.',
+      );
+      await DisableBatteryOptimization
+          .showDisableManufacturerBatteryOptimizationSettings(
+        'Additional battery settings',
+        'Your phone has extra battery restrictions beyond standard '
+            'Android. Please disable them for this app so ride tracking '
+            'is not interrupted mid-route.',
+      );
+    } catch (error) {
+      debugPrint('OEM auto-start/battery guide failed: $error');
+    }
+  }
+
+  /// Educates the driver on the one thing no amount of code can fully
+  /// guarantee against: some OEMs still kill a foreground service if the
+  /// app is force-swiped away from the recent-apps list. This is shown
+  /// once per fresh ride start.
+  void _showKeepAppOpenWarning() {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Keep the app running'),
+        content: const Text(
+          'Live GPS tracking will keep working while you use other apps '
+          'or lock the screen. Just avoid force-closing YATRI CABS from '
+          'the recent-apps list during the ride - that can stop tracking '
+          'on some phones.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<bool> _ensureLocationPermission() async {
@@ -332,6 +389,8 @@ class _RideScreenState extends State<RideScreen> {
       _totalDistanceMeters = resumeFrom.totalDistanceMeters;
       _previousLat = resumeFrom.previousLat;
       _previousLng = resumeFrom.previousLng;
+      _previousAltitude = resumeFrom.previousAltitude;
+      _previousFixTime = resumeFrom.previousFixTime;
       _routePoints
         ..clear()
         ..addAll(resumeFrom.routePoints);
@@ -355,14 +414,18 @@ class _RideScreenState extends State<RideScreen> {
       _totalDistanceMeters = 0.0;
       _previousLat = startingPosition.latitude;
       _previousLng = startingPosition.longitude;
+      _previousAltitude = startingPosition.altitude;
+      _previousFixTime = startingPosition.timestamp;
       _routePoints
         ..clear()
         ..add(LatLng(startingPosition.latitude, startingPosition.longitude));
     }
-    _previousFixTime = DateTime.now();
 
     _rideActive = true;
     _locationReady = true;
+    _isSlowPollMode = false;
+    _lastPollModeSwitchAt = null;
+    _highDistanceWarningLogged = false;
 
     // Keep the screen from turning off for the entire ride, and let the
     // app shrink into a small floating window (like Google Maps
@@ -373,15 +436,69 @@ class _RideScreenState extends State<RideScreen> {
 
     if (mounted) setState(() {});
 
-    // Runs as an Android foreground service (shows a persistent
-    // notification while the ride is active) so GPS keeps updating even
-    // after the screen locks or an incoming call takes over the screen -
-    // a plain Dart Timer would get suspended by Android in that case.
-    // intervalDuration keeps the same "one fix every 2 seconds" cadence
-    // as before under normal signal conditions.
+    if (resumeFrom == null) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _showKeepAppOpenWarning(),
+      );
+    }
+
+    _subscribeToPositionStream(slowPoll: false);
+
+    // Self-healing safety net: if the position stream ever goes silent
+    // for far longer than any single deep-signal-loss gap should
+    // reasonably last, re-subscribe rather than staying stuck silently -
+    // covers the rare case where the underlying stream itself dies
+    // without throwing a catchable error.
+    _watchdogTimer?.cancel();
+    _watchdogTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      _checkPositionStreamHealth,
+    );
+  }
+
+  void _checkPositionStreamHealth(Timer timer) {
+    if (!_rideActive) return;
+
+    final DateTime? lastFixTime = _previousFixTime;
+    if (lastFixTime == null) return;
+
+    final Duration silence = DateTime.now().difference(lastFixTime);
+    if (silence > const Duration(seconds: 90)) {
+      debugPrint(
+        'GPS watchdog: no fix for ${silence.inSeconds}s - restarting the '
+        'location stream as a precaution.',
+      );
+      unawaited(
+        _eventLogger.log(
+          EventSeverity.warning,
+          'GPS_STREAM_WATCHDOG_RESTART',
+          'No GPS fix for ${silence.inSeconds}s while a ride was active - '
+              'restarted the location stream as a precaution. May simply '
+              'be a genuine deep signal-loss stretch, or the underlying '
+              'stream silently stalling.',
+          context: <String, dynamic>{'silenceSeconds': silence.inSeconds},
+        ),
+      );
+      _subscribeToPositionStream(slowPoll: _isSlowPollMode);
+    }
+  }
+
+  /// Runs GPS tracking as an Android foreground service (persistent
+  /// notification while the ride is active) so it keeps updating even
+  /// after the screen locks or an incoming call takes over the screen -
+  /// a plain Dart Timer would get suspended by Android in that case.
+  ///
+  /// [slowPoll] trades fix frequency for battery life: while the vehicle
+  /// is genuinely stationary (a long stop/break), there is nothing new to
+  /// bill every 2 seconds, and a long remote ride can't afford to drain
+  /// the battery polling that often the whole time. See
+  /// [_maybeAdjustPollInterval] for when this switches back and forth.
+  void _subscribeToPositionStream({required bool slowPoll}) {
+    _positionSubscription?.cancel();
+
     final LocationSettings locationSettings = AndroidSettings(
       accuracy: LocationAccuracy.high,
-      intervalDuration: const Duration(seconds: 2),
+      intervalDuration: Duration(seconds: slowPoll ? 8 : 2),
       foregroundNotificationConfig: const ForegroundNotificationConfig(
         notificationTitle: 'YATRI CABS - Ride in progress',
         notificationText: 'Tracking your live location for accurate billing',
@@ -411,11 +528,38 @@ class _RideScreenState extends State<RideScreen> {
     );
   }
 
+  /// Switches between the normal 2-second poll and a battery-saving
+  /// 8-second poll based on the vehicle's reported speed. A short cooldown
+  /// avoids restarting the stream (and its foreground-service handoff) on
+  /// every single fix if speed is hovering right at the threshold.
+  void _maybeAdjustPollInterval(Position current) {
+    final bool shouldSlowPoll =
+        current.speed >= 0 && current.speed < GpsFixValidator.stationarySpeedThresholdMps;
+
+    if (shouldSlowPoll == _isSlowPollMode) return;
+
+    final DateTime? lastSwitch = _lastPollModeSwitchAt;
+    if (lastSwitch != null &&
+        DateTime.now().difference(lastSwitch) < const Duration(seconds: 15)) {
+      return;
+    }
+
+    _isSlowPollMode = shouldSlowPoll;
+    _lastPollModeSwitchAt = DateTime.now();
+    debugPrint(
+      shouldSlowPoll
+          ? 'Vehicle stationary - switching to battery-saving 8s GPS polling'
+          : 'Vehicle moving again - switching back to 2s GPS polling',
+    );
+    _subscribeToPositionStream(slowPoll: shouldSlowPoll);
+  }
+
   void _handleNewPosition(Position current) {
     if (!_rideActive) return;
 
     final double? prevLat = _previousLat;
     final double? prevLng = _previousLng;
+    final double? prevAltitude = _previousAltitude;
     final DateTime? prevTime = _previousFixTime;
 
     if (prevLat != null && prevLng != null && prevTime != null) {
@@ -423,6 +567,7 @@ class _RideScreenState extends State<RideScreen> {
         current: current,
         previousLat: prevLat,
         previousLng: prevLng,
+        previousAltitude: prevAltitude ?? current.altitude,
         previousFixTime: prevTime,
       );
 
@@ -445,7 +590,7 @@ class _RideScreenState extends State<RideScreen> {
       }
 
       final double elapsedSeconds =
-          DateTime.now().difference(prevTime).inMilliseconds / 1000.0;
+          current.timestamp.difference(prevTime).inMilliseconds / 1000.0;
       if (elapsedSeconds > 60) {
         unawaited(
           _eventLogger.log(
@@ -470,9 +615,33 @@ class _RideScreenState extends State<RideScreen> {
             totalDistanceMeters: _totalDistanceMeters,
             previousLat: current.latitude,
             previousLng: current.longitude,
+            previousAltitude: current.altitude,
+            previousFixTime: current.timestamp,
             routePoints: _routePoints,
           ),
         );
+
+        // Ride-level sanity net: catches slow, cumulative drift that no
+        // single fix's per-fix checks would individually reject on its
+        // own. Doesn't block billing - just flags it for a human to
+        // review, since the estimate itself can legitimately be off.
+        if (!_highDistanceWarningLogged &&
+            distanceCoveredKm > estimatedKm * 2.5) {
+          _highDistanceWarningLogged = true;
+          unawaited(
+            _eventLogger.log(
+              EventSeverity.warning,
+              'DISTANCE_EXCEEDS_ESTIMATE',
+              'Distance covered (${distanceCoveredKm.toStringAsFixed(1)}km) '
+                  'is more than 2.5x the estimated distance '
+                  '(${estimatedKm.toStringAsFixed(0)}km) - needs review.',
+              context: <String, dynamic>{
+                'distanceCoveredKm': distanceCoveredKm,
+                'estimatedKm': estimatedKm,
+              },
+            ),
+          );
+        }
       }
 
       debugPrint(
@@ -485,7 +654,8 @@ class _RideScreenState extends State<RideScreen> {
 
     _previousLat = current.latitude;
     _previousLng = current.longitude;
-    _previousFixTime = DateTime.now();
+    _previousAltitude = current.altitude;
+    _previousFixTime = current.timestamp;
     _gpsSignalStatus = GpsFixValidator.describeSignal(current.accuracy);
 
     _setGpsPosition(current, addBillingPoint: false);
@@ -493,6 +663,8 @@ class _RideScreenState extends State<RideScreen> {
     if (mounted) setState(() {});
 
     _moveCamera(LatLng(current.latitude, current.longitude));
+
+    _maybeAdjustPollInterval(current);
   }
 
   void _setGpsPosition(Position position, {required bool addBillingPoint}) {
@@ -526,6 +698,8 @@ class _RideScreenState extends State<RideScreen> {
   void _endRide() {
     _positionSubscription?.cancel();
     _positionSubscription = null;
+    _watchdogTimer?.cancel();
+    _watchdogTimer = null;
     _rideActive = false;
     WakelockPlus.disable();
     _floating.cancelOnLeavePiP();
@@ -537,6 +711,7 @@ class _RideScreenState extends State<RideScreen> {
   @override
   void dispose() {
     _positionSubscription?.cancel();
+    _watchdogTimer?.cancel();
     _mapController?.dispose();
     WakelockPlus.disable();
     super.dispose();

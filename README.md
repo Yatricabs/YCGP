@@ -25,6 +25,8 @@ android/
 
 .github/workflows/android-build.yml  - builds a release APK on every push
 codemagic.yaml                       - alternative CI build config
+CHANGELOG.md                         - version-by-version history: what changed and why
+GPS_TRACKING_NOTES.md                - living doc: GPS use-case log + not-done-yet ideas (update every GPS change)
 ```
 
 The GPS-fix-validation logic and the local-storage logic are each in
@@ -82,6 +84,34 @@ Every fix's outcome is written to the debug log (`GPS fix: accuracy=...
 accepted=... reason=... total=...`) - this is invaluable if a driver or
 passenger disputes a bill later; support can see exactly why a given
 stretch of GPS data was or wasn't counted.
+
+**Four further refinements, specific to hill/rural intercity routes:**
+
+- **GPS-fix timestamp, not processing time.** Implied-speed validation
+  uses `Position.timestamp` (the GPS chip's own fix time) rather than
+  `DateTime.now()`. The two can drift apart if the app was briefly
+  paused (e.g. resuming from the PiP floating window), which would
+  otherwise skew the speed calculation.
+- **Elevation-aware (3D) distance.** Flat great-circle distance alone
+  quietly under-counts a climb or descent on hill roads. Altitude is
+  combined in via `sqrt(horizontal² + altitudeDiff²)`, with the altitude
+  change clamped to what a very steep real road (~35% grade) could
+  plausibly produce per segment - phone-GPS altitude is noisier than
+  lat/lng, so an implausible elevation jump is treated as noise rather
+  than billed.
+- **Adaptive poll interval for battery life.** `_maybeAdjustPollInterval`
+  switches GPS polling from the normal 2-second cadence down to 8
+  seconds once the reported speed shows the vehicle is genuinely
+  stationary (a long stop/break), and back to 2 seconds once it's moving
+  again - with a 15-second cooldown so it doesn't thrash. On a long
+  remote ride, battery is often the real bottleneck: if the phone dies,
+  tracking stops entirely.
+- **Ride-level sanity net.** All the checks above are per-fix. As a
+  backstop against slow, cumulative drift that no single fix would ever
+  individually get rejected for, if the running total ever exceeds 2.5x
+  the pre-trip `estimatedKm`, a `DISTANCE_EXCEEDS_ESTIMATE` warning is
+  logged once (see 2.10) for human review - billing isn't blocked, since
+  the estimate itself can legitimately be off, but it's flagged.
 
 ### 2.4 Crash-safe local persistence (`ride_persistence.dart`)
 **Why it exists:** if the app crashes, gets killed by an aggressive OEM
@@ -189,6 +219,45 @@ is documented but **not wired up yet** for the same reason as the Kafka
 sync in 2.4 - no backend URL was available at the time this was built.
 It never clears the local queue before a confirmed successful delivery,
 so an event is never silently lost even if a sync attempt fails.
+
+### 2.11 Maximizing background reliability (and its honest limits)
+**No Android app can guarantee it will *never* be killed** - the OS
+reserves the right to kill any process under extreme memory pressure
+(this applies to Uber, Ola, Google Maps, and every other app equally,
+not just this one), and several OEMs (Xiaomi/MIUI, Oppo/Realme/ColorOS,
+Vivo/FuntouchOS, some Samsung builds) ship their own background-app
+killers that sit entirely outside standard Android APIs - there is no
+code-level way to disable those, only to guide the user to the right
+settings screen. Everything below pushes reliability as high as is
+actually possible within those real constraints:
+
+- **OEM auto-start / manufacturer battery-restriction guidance.** Right
+  after standard battery-optimization exemption (2.8) is granted,
+  `disable_battery_optimization` shows the manufacturer-specific
+  "auto-start" and "protected apps" settings screens for Xiaomi, Oppo,
+  Vivo, Samsung, Huawei, and others (best-effort, silently a no-op on
+  devices/OEMs without a matching restriction).
+- **GPS-stream watchdog.** A 30-second-interval check
+  (`_checkPositionStreamHealth`) restarts the location stream if no fix
+  has arrived for 90+ seconds. Covers the case where the underlying
+  stream silently stalls without throwing a catchable error - a genuine
+  deep-signal-loss stretch is harmless to restart into (still no signal
+  either way), so this is a safe, self-healing measure either way, and a
+  `GPS_STREAM_WATCHDOG_RESTART` event is logged so the pattern is
+  visible later if it happens often on a particular device.
+- **Driver education, not just code.** One thing genuinely cannot be
+  solved from the app side: on some OEMs, force-swiping the app away
+  from the recent-apps list can still kill even a foreground service.
+  A one-time dialog (`_showKeepAppOpenWarning`) tells the driver this
+  plainly when a ride starts - the app works fine locked/backgrounded/
+  switched-away-from, just don't force-close it mid-ride.
+
+Combined with the crash-safe persistence (2.4) and battery-optimization
+exemption (2.8) already in place, the realistic failure mode left is
+narrow: a driver actively force-closing the app from recents on a
+restrictive OEM device, or the OS killing it under genuine extreme
+memory pressure - both are now either mitigated or explicitly
+communicated rather than silent.
 
 ---
 
