@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:disable_battery_optimization/disable_battery_optimization.dart';
+import 'package:app_settings/app_settings.dart';
 import 'package:floating/floating.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geolocator_android/geolocator_android.dart';
@@ -317,22 +317,23 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     // each ship their own separate "auto-start"/"protected apps" list
     // that sits entirely outside the standard Android API. There is no
     // programmatic way to enable these - only to guide the driver to the
-    // right settings screen. Both calls are safe no-ops on devices/OEMs
-    // that don't have a matching restriction.
+    // right settings screen.
     //
-    // IMPORTANT: the disable_battery_optimization plugin's Future
-    // resolves as soon as its native dialog is *shown*, not once the
-    // driver has actually dismissed it (the plugin itself documents that
-    // it "cannot determine if the user has actually enabled" the
-    // setting). Awaiting the two calls back-to-back therefore does NOT
-    // wait for the first dialog to close before the second one opens -
-    // which was showing the "Additional battery settings" dialog
-    // stacked on top of the still-open "Allow Auto-Start" one.
+    // IMPORTANT: this used to call the disable_battery_optimization
+    // plugin's showEnableAutoStartSettings()/
+    // showDisableManufacturerBatteryOptimizationSettings(), which try to
+    // deep-link into a hardcoded, manufacturer-specific settings screen.
+    // On a phone whose manufacturer/Android version the plugin doesn't
+    // recognise, tapping "OK" on its dialog threw an unhandled
+    // ActivityNotFoundException *in the plugin's native Android code* -
+    // which is NOT catchable from Dart, so it crashed the whole app
+    // instantly with no error we could ever see or guard against.
     //
-    // Fix: show the two steps one at a time, each gated behind the
-    // driver explicitly tapping "Continue" on a plain Flutter dialog we
-    // fully control, instead of chaining the two native calls
-    // automatically and hoping the first one is done in time.
+    // Fix: never deep-link into an OEM-specific screen at all. Instead,
+    // only use `app_settings`, which opens standard, universally-safe
+    // Android settings screens (Battery Optimization list, and this
+    // app's own App Info page) - present on every Android device/OEM,
+    // so there is no unknown-target-screen crash risk.
     try {
       await _showAutoStartStep();
     } catch (error) {
@@ -346,10 +347,11 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     await _checkBatteryOptimizationStatus();
   }
 
-  /// Checks whether the standard Android exemption AND the OEM-specific
-  /// auto-start permission are both actually in place right now. There
-  /// is no way to force either one on - this only observes the current
-  /// state so the UI can keep reminding the driver until it's true.
+  /// Checks whether the standard Android battery-optimization exemption
+  /// is actually in place right now. There is no safe, universal way to
+  /// verify the OEM-specific auto-start setting (see note above on why
+  /// the plugin that used to check this was removed), so this focuses
+  /// on the one signal we can check reliably without crash risk.
   Future<void> _checkBatteryOptimizationStatus() async {
     bool concern = false;
 
@@ -359,17 +361,6 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
       if (!status.isGranted) concern = true;
     } catch (error) {
       debugPrint('Battery optimization status check failed: $error');
-    }
-
-    try {
-      // Returns true on phones that don't have this OEM restriction at
-      // all, so this only flags a concern on devices where it's a real,
-      // currently-unresolved risk.
-      final bool autoStartEnabled =
-          await DisableBatteryOptimization.isAutoStartEnabled ?? true;
-      if (!autoStartEnabled) concern = true;
-    } catch (error) {
-      debugPrint('Auto-start status check failed: $error');
     }
 
     if (!mounted) return;
@@ -387,8 +378,9 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
         title: const Text('Allow Auto-Start'),
         content: const Text(
           'To keep tracking your ride reliably in the background, please '
-          'allow YATRI CABS to auto-start on this phone. Tap Continue, '
-          'follow the steps on the next screen, then come back here.',
+          'allow YATRI CABS to auto-start on this phone. Tap Continue to '
+          'open Battery Optimization settings, find YATRI CABS, and set '
+          'it to "Don\'t optimize" / "Unrestricted", then come back here.',
         ),
         actions: <Widget>[
           TextButton(
@@ -399,13 +391,11 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
             onPressed: () async {
               Navigator.of(dialogContext).pop();
               try {
-                await DisableBatteryOptimization.showEnableAutoStartSettings(
-                  'Allow Auto-Start',
-                  'To keep tracking your ride reliably in the background, '
-                      'please allow YATRI CABS to auto-start on this phone.',
+                await AppSettings.openAppSettings(
+                  type: AppSettingsType.batteryOptimization,
                 );
               } catch (error) {
-                debugPrint('Auto-start settings failed: $error');
+                debugPrint('Battery optimization settings failed: $error');
               }
               // Give the OS a moment to finish closing its own settings
               // screen and return focus here before showing the next step.
@@ -427,9 +417,11 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
       builder: (BuildContext dialogContext) => AlertDialog(
         title: const Text('Additional battery settings'),
         content: const Text(
-          'Your phone has extra battery restrictions beyond standard '
-          'Android. Please disable them for this app so ride tracking '
-          'is not interrupted mid-route.',
+          'Some phones (Xiaomi, Vivo, Oppo, Samsung, and others) have '
+          'extra battery restrictions beyond standard Android. Tap '
+          'Continue to open this app\'s settings page, then look for a '
+          '"Battery", "Autostart", or "Protected apps" section there and '
+          'allow YATRI CABS so ride tracking isn\'t interrupted mid-route.',
         ),
         actions: <Widget>[
           TextButton(
@@ -440,15 +432,9 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
             onPressed: () async {
               Navigator.of(dialogContext).pop();
               try {
-                await DisableBatteryOptimization
-                    .showDisableManufacturerBatteryOptimizationSettings(
-                  'Additional battery settings',
-                  'Your phone has extra battery restrictions beyond '
-                      'standard Android. Please disable them for this app '
-                      'so ride tracking is not interrupted mid-route.',
-                );
+                await AppSettings.openAppSettings();
               } catch (error) {
-                debugPrint('Manufacturer battery settings failed: $error');
+                debugPrint('App settings failed: $error');
               }
             },
             child: const Text('Continue'),
