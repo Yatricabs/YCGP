@@ -3,8 +3,16 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:floating/floating.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:geolocator_android/geolocator_android.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:permission_handler/permission_handler.dart' as ph;
+import 'package:wakelock_plus/wakelock_plus.dart';
+
+import 'event_logger.dart';
+import 'gps_validator.dart';
+import 'ride_persistence.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,8 +63,14 @@ class _RideScreenState extends State<RideScreen> {
   static const LatLng fallbackLocation = LatLng(26.8467, 80.9462);
 
   GoogleMapController? _mapController;
-  Timer? _gpsTimer;
-  Position? _previousPosition;
+  StreamSubscription<Position>? _positionSubscription;
+  double? _previousLat;
+  double? _previousLng;
+  DateTime? _previousFixTime;
+  final Floating _floating = Floating();
+  final GpsFixValidator _validator = GpsFixValidator();
+  final RidePersistence _persistence = RidePersistence();
+  final EventLogger _eventLogger = EventLogger();
 
   LatLng _mapCenter = fallbackLocation;
   LatLng? _currentLocation;
@@ -69,6 +83,7 @@ class _RideScreenState extends State<RideScreen> {
   bool _locationReady = false;
   bool _permissionDenied = false;
   String _status = 'Getting GPS location...';
+  String _gpsSignalStatus = 'GPS: Searching...';
   BitmapDescriptor _carIcon = BitmapDescriptor.defaultMarker;
 
   Set<Marker> get _markers {
@@ -208,8 +223,26 @@ class _RideScreenState extends State<RideScreen> {
         _permissionDenied = true;
         _status = 'Location permission required';
       });
+      unawaited(
+        _eventLogger.log(
+          EventSeverity.warning,
+          'LOCATION_PERMISSION_DENIED',
+          'Ride could not start - location permission was not granted.',
+        ),
+      );
       return;
     }
+
+    // Some OEMs (Xiaomi/Vivo/Oppo/Samsung especially) aggressively kill
+    // background location tracking to save battery - exactly when it
+    // matters most, on long low-signal rural stretches where the radio
+    // works harder. Ask once to be exempted.
+    await _requestBatteryOptimizationExemption();
+
+    // If the app was killed mid-ride last time (crash, OS kill, dead
+    // battery), recover the distance/route collected so far instead of
+    // silently restarting the bill from zero.
+    final RideProgress? recovered = await _persistence.loadInProgressRide();
 
     try {
       final Position position = await Geolocator.getCurrentPosition(
@@ -222,13 +255,32 @@ class _RideScreenState extends State<RideScreen> {
 
       // The reference screen is already in an active ride state,
       // therefore GPS tracking starts automatically.
-      _startRideTracking(position);
+      _startRideTracking(position, resumeFrom: recovered);
     } catch (error) {
       debugPrint('Initial GPS error: $error');
+      unawaited(
+        _eventLogger.log(
+          EventSeverity.critical,
+          'INITIAL_GPS_UNAVAILABLE',
+          'Could not get an initial GPS fix to start the ride: $error',
+        ),
+      );
       if (!mounted) return;
       setState(() {
         _status = 'GPS unavailable';
       });
+    }
+  }
+
+  Future<void> _requestBatteryOptimizationExemption() async {
+    try {
+      final ph.PermissionStatus status =
+          await ph.Permission.ignoreBatteryOptimizations.status;
+      if (!status.isGranted) {
+        await ph.Permission.ignoreBatteryOptimizations.request();
+      }
+    } catch (error) {
+      debugPrint('Battery optimization exemption request failed: $error');
     }
   }
 
@@ -255,86 +307,192 @@ class _RideScreenState extends State<RideScreen> {
       return false;
     }
 
-    return permission != LocationPermission.denied;
+    // Foreground ("while in use") permission alone is NOT enough to keep
+    // GPS running once the screen locks or a phone call takes over the
+    // screen - Android suspends it. A second prompt asking for "Allow all
+    // the time" (background) is required; Android only shows this after
+    // foreground access has already been granted.
+    if (permission == LocationPermission.whileInUse) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    return permission == LocationPermission.whileInUse ||
+        permission == LocationPermission.always;
   }
 
-  void _startRideTracking(Position startingPosition) {
-    _gpsTimer?.cancel();
+  void _startRideTracking(Position startingPosition, {RideProgress? resumeFrom}) {
+    _positionSubscription?.cancel();
 
-    _previousPosition = startingPosition;
-    _totalDistanceMeters = 0.0;
-    _routePoints
-      ..clear()
-      ..add(LatLng(startingPosition.latitude, startingPosition.longitude));
+    if (resumeFrom != null) {
+      // Recovering from a crash/OS-kill/dead-battery mid-ride: keep the
+      // billed distance and route collected so far instead of zeroing
+      // them out. There will be a small gap in the route for the time
+      // the app was down - this is the "considerable but acceptable"
+      // difference, not a full loss of billed distance.
+      _totalDistanceMeters = resumeFrom.totalDistanceMeters;
+      _previousLat = resumeFrom.previousLat;
+      _previousLng = resumeFrom.previousLng;
+      _routePoints
+        ..clear()
+        ..addAll(resumeFrom.routePoints);
+      debugPrint(
+        'Resumed ride after restart: '
+        '${distanceCoveredKm.toStringAsFixed(3)}km already recorded',
+      );
+      unawaited(
+        _eventLogger.log(
+          EventSeverity.warning,
+          'RIDE_RESUMED_AFTER_RESTART',
+          'App restarted mid-ride (crash/OS kill/dead battery) - resumed '
+              'from ${distanceCoveredKm.toStringAsFixed(3)}km instead of '
+              'starting over.',
+          context: <String, dynamic>{
+            'recoveredDistanceMeters': _totalDistanceMeters,
+          },
+        ),
+      );
+    } else {
+      _totalDistanceMeters = 0.0;
+      _previousLat = startingPosition.latitude;
+      _previousLng = startingPosition.longitude;
+      _routePoints
+        ..clear()
+        ..add(LatLng(startingPosition.latitude, startingPosition.longitude));
+    }
+    _previousFixTime = DateTime.now();
 
     _rideActive = true;
     _locationReady = true;
 
+    // Keep the screen from turning off for the entire ride, and let the
+    // app shrink into a small floating window (like Google Maps
+    // navigation) instead of going fully into the background whenever the
+    // driver switches to another app while a ride is active.
+    WakelockPlus.enable();
+    _floating.enable(const OnLeavePiP());
+
     if (mounted) setState(() {});
 
-    // Exactly one GPS read every 2 seconds while the ride is active.
-    _gpsTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      _updateLiveGps();
-    });
+    // Runs as an Android foreground service (shows a persistent
+    // notification while the ride is active) so GPS keeps updating even
+    // after the screen locks or an incoming call takes over the screen -
+    // a plain Dart Timer would get suspended by Android in that case.
+    // intervalDuration keeps the same "one fix every 2 seconds" cadence
+    // as before under normal signal conditions.
+    final LocationSettings locationSettings = AndroidSettings(
+      accuracy: LocationAccuracy.high,
+      intervalDuration: const Duration(seconds: 2),
+      foregroundNotificationConfig: const ForegroundNotificationConfig(
+        notificationTitle: 'YATRI CABS - Ride in progress',
+        notificationText: 'Tracking your live location for accurate billing',
+        notificationIcon: AndroidResource(
+          name: 'ic_notification',
+          defType: 'drawable',
+        ),
+        enableWakeLock: true,
+        setOngoing: true,
+      ),
+    );
+
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: locationSettings,
+    ).listen(
+      _handleNewPosition,
+      onError: (Object error) {
+        debugPrint('Position stream error: $error');
+        unawaited(
+          _eventLogger.log(
+            EventSeverity.critical,
+            'POSITION_STREAM_ERROR',
+            'The GPS position stream threw an error: $error',
+          ),
+        );
+      },
+    );
   }
 
-  Future<void> _updateLiveGps() async {
+  void _handleNewPosition(Position current) {
     if (!_rideActive) return;
 
-    try {
-      final Position current = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-        ),
+    final double? prevLat = _previousLat;
+    final double? prevLng = _previousLng;
+    final DateTime? prevTime = _previousFixTime;
+
+    if (prevLat != null && prevLng != null && prevTime != null) {
+      final GpsFixResult result = _validator.evaluate(
+        current: current,
+        previousLat: prevLat,
+        previousLng: prevLng,
+        previousFixTime: prevTime,
       );
 
-      final Position? previous = _previousPosition;
-
-      if (previous != null) {
-        final double segmentMeters = Geolocator.distanceBetween(
-          previous.latitude,
-          previous.longitude,
-          current.latitude,
-          current.longitude,
-        );
-
-        // Billing protection:
-        // 1) Ignore very poor GPS fixes (accuracy worse than 100 m).
-        // 2) Ignore essentially-zero movement (< 1 m) - this is GPS jitter
-        //    while the phone is sitting still, NOT a real-world minimum
-        //    speed. (The old 3 m floor silently discarded normal walking
-        //    speed - ~2-2.5 m every 2 sec - which is why the total stayed
-        //    stuck at 0.0 km even while actually moving.)
-        // 3) Ignore an impossible jump (> 400 m in a 2-sec sample, i.e.
-        //    faster than ~720 km/h) - this is a GPS glitch/teleport, not
-        //    real movement.
-        final bool accuracyOk = current.accuracy <= 100;
-        final bool isRealMovement = segmentMeters >= 1 && segmentMeters <= 400;
-
-        if (accuracyOk && isRealMovement) {
-          _totalDistanceMeters += segmentMeters;
-          _routePoints.add(
-            LatLng(current.latitude, current.longitude),
-          );
-        }
-
-        debugPrint(
-          'GPS: ${current.latitude}, ${current.longitude} | '
-          'accuracy=${current.accuracy.toStringAsFixed(1)}m | '
-          'segment=${segmentMeters.toStringAsFixed(1)}m | '
-          'total=${distanceCoveredKm.toStringAsFixed(3)}km',
+      // Anomaly reporting: capture the events that actually matter for a
+      // billing dispute or a device-health investigation later - not
+      // every routine low-accuracy rejection, which is normal and common
+      // in hills/forest and would just add noise.
+      if (current.isMocked) {
+        unawaited(
+          _eventLogger.log(
+            EventSeverity.critical,
+            'MOCK_GPS_DETECTED',
+            'A GPS fix flagged as mock/fake location was rejected.',
+            context: <String, dynamic>{
+              'lat': current.latitude,
+              'lng': current.longitude,
+            },
+          ),
         );
       }
 
-      _previousPosition = current;
-      _setGpsPosition(current, addBillingPoint: false);
+      final double elapsedSeconds =
+          DateTime.now().difference(prevTime).inMilliseconds / 1000.0;
+      if (elapsedSeconds > 60) {
+        unawaited(
+          _eventLogger.log(
+            EventSeverity.warning,
+            'GPS_SIGNAL_GAP',
+            'No GPS fix received for ${elapsedSeconds.toStringAsFixed(0)}s '
+                '(likely a tunnel/valley/dense-canopy signal loss).',
+            context: <String, dynamic>{'gapSeconds': elapsedSeconds},
+          ),
+        );
+      }
 
-      if (mounted) setState(() {});
+      if (result.countTowardBilling) {
+        _totalDistanceMeters += result.segmentMeters;
+        _routePoints.add(LatLng(current.latitude, current.longitude));
 
-      await _moveCamera(LatLng(current.latitude, current.longitude));
-    } catch (error) {
-      debugPrint('Live GPS error: $error');
+        // Save immediately after every accepted fix - if the app gets
+        // killed mid-ride, at most the last couple of seconds of travel
+        // are ever at risk, never the whole ride's billed distance.
+        unawaited(
+          _persistence.saveProgress(
+            totalDistanceMeters: _totalDistanceMeters,
+            previousLat: current.latitude,
+            previousLng: current.longitude,
+            routePoints: _routePoints,
+          ),
+        );
+      }
+
+      debugPrint(
+        'GPS fix: accuracy=${current.accuracy.toStringAsFixed(1)}m | '
+        'accepted=${result.countTowardBilling} | '
+        '${result.reason ?? "counted ${result.segmentMeters.toStringAsFixed(1)}m"} | '
+        'total=${distanceCoveredKm.toStringAsFixed(3)}km',
+      );
     }
+
+    _previousLat = current.latitude;
+    _previousLng = current.longitude;
+    _previousFixTime = DateTime.now();
+    _gpsSignalStatus = GpsFixValidator.describeSignal(current.accuracy);
+
+    _setGpsPosition(current, addBillingPoint: false);
+
+    if (mounted) setState(() {});
+
+    _moveCamera(LatLng(current.latitude, current.longitude));
   }
 
   void _setGpsPosition(Position position, {required bool addBillingPoint}) {
@@ -366,21 +524,33 @@ class _RideScreenState extends State<RideScreen> {
   }
 
   void _endRide() {
-    _gpsTimer?.cancel();
-    _gpsTimer = null;
+    _positionSubscription?.cancel();
+    _positionSubscription = null;
     _rideActive = false;
+    WakelockPlus.disable();
+    _floating.cancelOnLeavePiP();
+    // Ride finished cleanly - nothing left to recover on next launch.
+    unawaited(_persistence.clear());
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    _gpsTimer?.cancel();
+    _positionSubscription?.cancel();
     _mapController?.dispose();
+    WakelockPlus.disable();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    return PiPSwitcher(
+      childWhenEnabled: _buildPipView(),
+      childWhenDisabled: _buildFullScreen(),
+    );
+  }
+
+  Widget _buildFullScreen() {
     return Scaffold(
       backgroundColor: YatriColors.background,
       body: SafeArea(
@@ -396,6 +566,56 @@ class _RideScreenState extends State<RideScreen> {
             _buildBottomBar(),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Small view shown when the app has shrunk into the floating
+  /// Picture-in-Picture window (e.g. driver switched to another app mid
+  /// ride) - the OS does not deliver touch input to this view, so it is
+  /// kept to just the map and the live distance, matching how Google Maps
+  /// shows a minimal floating window during turn-by-turn navigation.
+  Widget _buildPipView() {
+    return Scaffold(
+      backgroundColor: YatriColors.background,
+      body: Stack(
+        fit: StackFit.expand,
+        children: <Widget>[
+          GoogleMap(
+            initialCameraPosition: CameraPosition(
+              target: _mapCenter,
+              zoom: 16.0,
+            ),
+            myLocationEnabled: true,
+            zoomControlsEnabled: false,
+            zoomGesturesEnabled: false,
+            scrollGesturesEnabled: false,
+            rotateGesturesEnabled: false,
+            tiltGesturesEnabled: false,
+            compassEnabled: false,
+            mapToolbarEnabled: false,
+            markers: _markers,
+            polylines: _polylines,
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Container(
+              color: YatriColors.green,
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
+              child: Text(
+                distanceText,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -583,6 +803,38 @@ class _RideScreenState extends State<RideScreen> {
                         'Getting GPS location...',
                         style: TextStyle(fontWeight: FontWeight.w600),
                       ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (_locationReady && !_permissionDenied)
+            Positioned(
+              top: 10,
+              right: 10,
+              child: IgnorePointer(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: <BoxShadow>[
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.15),
+                        blurRadius: 4,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    _gpsSignalStatus,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: YatriColors.dark,
                     ),
                   ),
                 ),
