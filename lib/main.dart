@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:floating/floating.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geolocator_android/geolocator_android.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -435,6 +436,63 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
                 await AppSettings.openAppSettings();
               } catch (error) {
                 debugPrint('App settings failed: $error');
+              }
+              await Future.delayed(const Duration(milliseconds: 600));
+              await _showOverlayPermissionStep();
+            },
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// "Display over other apps" (SYSTEM_ALERT_WINDOW) does not, by itself,
+  /// keep a background service alive - that's the battery-optimization
+  /// and auto-start settings above. This is requested separately because
+  /// some OEM auto-start/protected-app screens (notably Xiaomi's) will
+  /// not function correctly unless the app also holds this permission,
+  /// so asking for it here improves the odds the steps above actually
+  /// stick on those phones.
+  ///
+  /// This uses flutter_overlay_window's own requestPermission(), which
+  /// opens Android's standard "Display over other apps" settings page
+  /// for this app - a normal, universal Android settings screen, not a
+  /// manufacturer-specific deep link, so it does not carry the same
+  /// crash risk the old disable_battery_optimization calls did.
+  Future<void> _showOverlayPermissionStep() async {
+    if (!mounted) return;
+
+    bool alreadyGranted = false;
+    try {
+      alreadyGranted = await FlutterOverlayWindow.isPermissionGranted();
+    } catch (error) {
+      debugPrint('Overlay permission check failed: $error');
+    }
+    if (alreadyGranted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Allow Display Over Other Apps'),
+        content: const Text(
+          'Some phones need this permission for the auto-start setting '
+          'above to actually work. Tap Continue and allow "Display over '
+          'other apps" for YATRI CABS, then come back here.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Skip'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.of(dialogContext).pop();
+              try {
+                await FlutterOverlayWindow.requestPermission();
+              } catch (error) {
+                debugPrint('Overlay permission request failed: $error');
               }
             },
             child: const Text('Continue'),
