@@ -98,6 +98,8 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
   // a visible banner keeps showing) until we've actually verified it's
   // been turned on.
   bool _batteryOptimizationConcern = false;
+  DateTime? _rideStartTime;
+  double _currentSpeedKmh = 0;
   BitmapDescriptor _carIcon = BitmapDescriptor.defaultMarker;
 
   Set<Marker> get _markers {
@@ -132,6 +134,18 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
   double get distanceCoveredKm => _totalDistanceMeters / 1000.0;
 
   String get distanceText => '${distanceCoveredKm.toStringAsFixed(1)}km';
+
+  /// Trip-average speed: total distance over the entire ride duration
+  /// (including stops), matching how a car's trip computer usually
+  /// defines "average speed" - not just the moving-time average.
+  double get averageSpeedKmh {
+    final DateTime? startTime = _rideStartTime;
+    if (startTime == null || _totalDistanceMeters <= 0) return 0;
+    final double elapsedHours =
+        DateTime.now().difference(startTime).inMilliseconds / 3600000.0;
+    if (elapsedHours <= 0) return 0;
+    return distanceCoveredKm / elapsedHours;
+  }
 
   @override
   void initState() {
@@ -479,6 +493,7 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
       _previousLng = resumeFrom.previousLng;
       _previousAltitude = resumeFrom.previousAltitude;
       _previousFixTime = resumeFrom.previousFixTime;
+      _rideStartTime = resumeFrom.rideStartTime;
       _routePoints
         ..clear()
         ..addAll(resumeFrom.routePoints);
@@ -504,6 +519,8 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
       _previousLng = startingPosition.longitude;
       _previousAltitude = startingPosition.altitude;
       _previousFixTime = startingPosition.timestamp;
+      _rideStartTime = startingPosition.timestamp;
+      _currentSpeedKmh = 0;
       _routePoints
         ..clear()
         ..add(LatLng(startingPosition.latitude, startingPosition.longitude));
@@ -711,6 +728,7 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
             previousLng: current.longitude,
             previousAltitude: current.altitude,
             previousFixTime: current.timestamp,
+            rideStartTime: _rideStartTime ?? current.timestamp,
             routePoints: _routePoints,
           ),
         );
@@ -751,6 +769,9 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     _previousAltitude = current.altitude;
     _previousFixTime = current.timestamp;
     _gpsSignalStatus = GpsFixValidator.describeSignal(current.accuracy);
+    if (current.speed >= 0) {
+      _currentSpeedKmh = current.speed * 3.6;
+    }
 
     _setGpsPosition(current, addBillingPoint: false);
 
@@ -875,11 +896,11 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
               color: YatriColors.green,
               padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
               child: Text(
-                distanceText,
+                '$distanceText  •  ${_currentSpeedKmh.toStringAsFixed(0)} km/h',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,
-                  fontSize: 18,
+                  fontSize: 16,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -1110,6 +1131,7 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
                 ),
               ),
             ),
+          if (_locationReady && !_permissionDenied) _buildSpeedCard(),
           if (_batteryOptimizationConcern && !_permissionDenied)
             Positioned(
               bottom: 12,
@@ -1158,6 +1180,69 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  /// Small speedometer-style panel on the map: current speed prominent
+  /// (large, live-updating every fix) with trip-average speed shown
+  /// underneath in smaller text.
+  Widget _buildSpeedCard() {
+    return Positioned(
+      left: 10,
+      top: 10,
+      child: IgnorePointer(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: YatriColors.green,
+            borderRadius: BorderRadius.circular(10),
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.20),
+                blurRadius: 6,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: <Widget>[
+                  Text(
+                    _currentSpeedKmh.toStringAsFixed(0),
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Text(
+                    'km/h',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+              Text(
+                'Avg ${averageSpeedKmh.toStringAsFixed(0)} km/h',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

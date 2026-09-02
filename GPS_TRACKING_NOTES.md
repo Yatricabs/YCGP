@@ -29,11 +29,24 @@ specific conditions - not under ideal flat-open-urban GPS conditions.
 
 *(Newest entries at the top. One line each: what, and the one-line why.)*
 
-- **OEM auto-start guidance + GPS-stream watchdog + driver warning
-  dialog** - Xiaomi/Oppo/Vivo/Samsung-style background killers sit
-  outside standard Android APIs and can still stop tracking; the
-  watchdog restarts a silently-stalled stream after 90s of no fix; the
-  dialog tells the driver plainly not to force-close the app mid-ride.
+- **Current + average speed monitoring** - a small speedometer card
+  (current speed live, trip-average below) on the map and in the PiP
+  view; average speed's elapsed-time reference survives crash-recovery
+  so it doesn't reset on an app restart mid-ride.
+- **Battery-settings flow rebuilt after a real-device crash** - the
+  original OEM-auto-start-launching approach (`disable_battery_
+  optimization` plugin) crashed the app on a real Xiaomi/MIUI test
+  device; replaced with a manual-instructions dialog (zero native
+  Settings-intent launches) plus a persistent orange banner that
+  actually verifies the standard exemption is granted and re-checks on
+  ride start, every 30s (piggybacked on the GPS watchdog), and on
+  app-resume - a real compliance nudge instead of a one-time dialog
+  the driver can dismiss and forget.
+- **GPS-stream watchdog + driver "don't force-close" warning dialog** -
+  the watchdog restarts a silently-stalled stream after 90s of no fix;
+  the dialog tells the driver plainly not to force-close the app
+  mid-ride, since that's the one failure mode no code can fully
+  prevent.
 - **Elevation-aware (3D) distance** - flat great-circle distance alone
   under-counts a climb/descent on hill roads; altitude change is
   combined in (clamped against GPS altitude noise).

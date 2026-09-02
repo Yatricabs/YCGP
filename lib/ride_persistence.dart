@@ -29,6 +29,7 @@ class RidePersistence {
   static const String _keyPrevLng = 'ride_prev_lng';
   static const String _keyPrevAltitude = 'ride_prev_altitude';
   static const String _keyPrevFixTimeMillis = 'ride_prev_fix_time_ms';
+  static const String _keyRideStartTimeMillis = 'ride_start_time_ms';
   static const String _keyRoutePoints = 'ride_route_points';
 
   /// Called after every GPS fix that counts toward billing. Cheap enough
@@ -40,6 +41,7 @@ class RidePersistence {
     required double previousLng,
     required double previousAltitude,
     required DateTime previousFixTime,
+    required DateTime rideStartTime,
     required List<LatLng> routePoints,
   }) async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -51,6 +53,10 @@ class RidePersistence {
     await prefs.setInt(
       _keyPrevFixTimeMillis,
       previousFixTime.millisecondsSinceEpoch,
+    );
+    await prefs.setInt(
+      _keyRideStartTimeMillis,
+      rideStartTime.millisecondsSinceEpoch,
     );
     await prefs.setString(_keyRoutePoints, _encodeRoute(routePoints));
   }
@@ -78,6 +84,10 @@ class RidePersistence {
     final DateTime prevFixTime = prevFixMillis != null
         ? DateTime.fromMillisecondsSinceEpoch(prevFixMillis)
         : DateTime.now();
+    final int? rideStartMillis = prefs.getInt(_keyRideStartTimeMillis);
+    final DateTime rideStartTime = rideStartMillis != null
+        ? DateTime.fromMillisecondsSinceEpoch(rideStartMillis)
+        : prevFixTime;
 
     return RideProgress(
       totalDistanceMeters: totalDistance,
@@ -85,6 +95,7 @@ class RidePersistence {
       previousLng: prevLng,
       previousAltitude: prevAltitude,
       previousFixTime: prevFixTime,
+      rideStartTime: rideStartTime,
       routePoints: _decodeRoute(prefs.getString(_keyRoutePoints)),
     );
   }
@@ -99,6 +110,7 @@ class RidePersistence {
     await prefs.remove(_keyPrevLng);
     await prefs.remove(_keyPrevAltitude);
     await prefs.remove(_keyPrevFixTimeMillis);
+    await prefs.remove(_keyRideStartTimeMillis);
     await prefs.remove(_keyRoutePoints);
   }
 
@@ -136,6 +148,7 @@ class RideProgress {
     required this.previousLng,
     required this.previousAltitude,
     required this.previousFixTime,
+    required this.rideStartTime,
     required this.routePoints,
   });
 
@@ -144,5 +157,6 @@ class RideProgress {
   final double previousLng;
   final double previousAltitude;
   final DateTime previousFixTime;
+  final DateTime rideStartTime;
   final List<LatLng> routePoints;
 }

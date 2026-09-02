@@ -6,6 +6,39 @@ other remote no-network stretches, billed purely from GPS.
 
 ---
 
+### Current + average speed monitoring
+**What:** A small speedometer card on the map (current speed, live) plus
+trip-average speed below it; also shown compactly in the PiP floating
+view. Average speed's elapsed-time reference is persisted so it survives
+a crash/restart mid-ride.
+**Why:** Gives the driver/passenger a live sense of pace on unfamiliar
+hill/forest routes, without needing a separate app - and average speed
+staying correct across an app restart matters for the same reason
+distance-recovery does (2.4): a remote-area crash shouldn't quietly
+reset trip stats to zero.
+
+### Real-device crash fix: OEM battery-settings flow rebuilt
+**What:** Removed the `disable_battery_optimization` plugin entirely
+(it was used to auto-launch OEM-specific "auto-start" settings screens)
+and replaced it with a single plain-Flutter dialog that gives the driver
+manual instructions instead of launching any Settings intent itself.
+Added `_checkBatteryOptimizationStatus` (verifies the standard exemption
+is actually granted via `permission_handler`, rather than assuming a
+dialog worked) and a persistent orange banner that stays visible on the
+ride screen until it's genuinely fixed - re-checked on ride start, every
+30s, and on app-resume (`WidgetsBindingObserver`).
+**Why:** On a real Xiaomi/MIUI test device, the previous auto-launching
+flow crashed the app outright ("YATRI CABS keeps stopping") right after
+the driver tapped Continue on the second chained dialog. A crash during
+the exact flow meant to *improve* tracking reliability is worse than not
+having the flow at all. The new version trades some convenience
+(driver opens Settings manually) for zero native-intent crash risk, and
+the persistent banner - instead of a one-time dialog easy to dismiss and
+forget - keeps nudging compliance since this can't be enforced, only
+encouraged.
+
+---
+
 ### Gradle build fix
 **What:** `assembleRelease` task lookup wrapped in `afterEvaluate {}` in
 `android/app/build.gradle.kts`.

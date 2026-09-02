@@ -231,12 +231,34 @@ code-level way to disable those, only to guide the user to the right
 settings screen. Everything below pushes reliability as high as is
 actually possible within those real constraints:
 
-- **OEM auto-start / manufacturer battery-restriction guidance.** Right
-  after standard battery-optimization exemption (2.8) is granted,
-  `disable_battery_optimization` shows the manufacturer-specific
-  "auto-start" and "protected apps" settings screens for Xiaomi, Oppo,
-  Vivo, Samsung, Huawei, and others (best-effort, silently a no-op on
-  devices/OEMs without a matching restriction).
+- **Battery-settings guide (informational, no automatic Settings
+  launch).** `_showBatterySettingsGuide` shows a single plain dialog
+  telling the driver exactly what to go set manually (Battery >
+  Unrestricted, plus their phone's Autostart/Protected-apps list if it
+  has one) - it does **not** launch any Settings intent itself. An
+  earlier version used the `disable_battery_optimization` plugin to
+  auto-launch OEM-specific settings screens; on a real Xiaomi/MIUI test
+  device this crashed the app outright ("YATRI CABS keeps stopping")
+  right after tapping Continue. That plugin was removed entirely rather
+  than patched - one plain dialog with zero automatic navigation has
+  nothing left in the flow for a flaky OEM Settings integration to
+  crash on.
+- **Persistent verification banner, not a one-time dialog.**
+  `_checkBatteryOptimizationStatus` actually checks (via
+  `permission_handler`, the one signal that can be verified reliably)
+  whether the standard battery-optimization exemption is really
+  granted - it doesn't just assume the dialog worked. If not, an orange
+  banner ("Battery settings not optimized - tap to fix...") stays
+  visible at the bottom of the ride screen. This re-checks at three
+  points: right when the ride starts, every 30 seconds (piggybacked on
+  the existing GPS watchdog timer - no separate `Timer` needed), and
+  immediately when the app resumes from the background
+  (`WidgetsBindingObserver.didChangeAppLifecycleState`) - so if the
+  driver goes into Settings and fixes it, the banner disappears the
+  moment they come back, without waiting up to 30 seconds. Tapping the
+  banner re-opens the guide dialog. A driver dismissing the dialog once
+  no longer makes the reminder go away for the rest of the ride - this
+  is a real compliance nudge, not just a first-launch formality.
 - **GPS-stream watchdog.** A 30-second-interval check
   (`_checkPositionStreamHealth`) restarts the location stream if no fix
   has arrived for 90+ seconds. Covers the case where the underlying
@@ -252,12 +274,24 @@ actually possible within those real constraints:
   plainly when a ride starts - the app works fine locked/backgrounded/
   switched-away-from, just don't force-close it mid-ride.
 
-Combined with the crash-safe persistence (2.4) and battery-optimization
-exemption (2.8) already in place, the realistic failure mode left is
-narrow: a driver actively force-closing the app from recents on a
-restrictive OEM device, or the OS killing it under genuine extreme
-memory pressure - both are now either mitigated or explicitly
-communicated rather than silent.
+Combined with the crash-safe persistence (2.4), this pushes compliance
+as high as realistically achievable without ever claiming a guarantee
+the OS itself doesn't offer - a driver actively force-closing the app
+from recents, or the OS killing it under genuine extreme memory
+pressure, are the two failure modes that remain, and both are now
+either nudged against repeatedly or explicitly communicated rather than
+silent.
+
+### 2.12 Current + average speed monitoring
+A small speedometer-style card in the top-left of the map shows
+**current speed** (large, updates every fix, from `Position.speed`) and
+**trip-average speed** underneath (`averageSpeedKmh` = total distance ÷
+elapsed ride time, so it includes stops - the same definition a car's
+trip computer typically uses). Also shown compactly in the PiP floating
+view alongside distance. Average speed's elapsed-time reference
+(`_rideStartTime`) is itself persisted and restored on crash-recovery
+(2.4), so it stays correct across an app restart mid-ride rather than
+resetting.
 
 ---
 
