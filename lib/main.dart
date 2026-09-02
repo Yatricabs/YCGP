@@ -3,9 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:app_settings/app_settings.dart';
 import 'package:floating/floating.dart';
-import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geolocator_android/geolocator_android.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -147,10 +145,12 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed && _rideActive) {
-      // The driver may have just come back from the OEM auto-start /
-      // battery settings screen - re-check right away instead of
-      // waiting for the next periodic check, so the banner clears as
-      // soon as it's actually fixed.
+      // The driver may have just come back from their phone's own
+      // Settings app after following the battery/autostart guide - only
+      // recheck the standard exemption we CAN verify (see
+      // _checkBatteryOptimizationStatus), right away instead of waiting
+      // for the next periodic check, so the banner clears as soon as
+      // it's actually fixed.
       unawaited(_checkBatteryOptimizationStatus());
     }
   }
@@ -320,31 +320,30 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     // programmatic way to enable these - only to guide the driver to the
     // right settings screen.
     //
-    // IMPORTANT: this used to call the disable_battery_optimization
-    // plugin's showEnableAutoStartSettings()/
-    // showDisableManufacturerBatteryOptimizationSettings(), which try to
-    // deep-link into a hardcoded, manufacturer-specific settings screen.
-    // On a phone whose manufacturer/Android version the plugin doesn't
-    // recognise, tapping "OK" on its dialog threw an unhandled
-    // ActivityNotFoundException *in the plugin's native Android code* -
-    // which is NOT catchable from Dart, so it crashed the whole app
-    // instantly with no error we could ever see or guard against.
+    // IMPORTANT - history of this function, for whoever touches it next:
+    // this used to (1) call the disable_battery_optimization plugin's
+    // native OEM-specific dialogs, which crashed instantly on an
+    // unrecognised device/manufacturer (uncatchable native
+    // ActivityNotFoundException), then (2) call app_settings'
+    // openAppSettings() in an auto-chained sequence of three dialogs
+    // triggered off app-resume. On a real Xiaomi/MIUI test device, THAT
+    // also crashed the app ("YATRI CABS keeps stopping") right after
+    // tapping Continue on the second dialog in the chain.
     //
-    // Fix: never deep-link into an OEM-specific screen at all. Instead,
-    // only use `app_settings`, which opens standard, universally-safe
-    // Android settings screens (Battery Optimization list, and this
-    // app's own App Info page) - present on every Android device/OEM,
-    // so there is no unknown-target-screen crash risk.
+    // Two different plugins, two different crashes, both centered on
+    // automatically launching a Settings intent and/or auto-chaining a
+    // follow-up dialog off an app-resume signal. Rather than try a third
+    // plugin, this now does the minimum-risk thing: show ONE plain
+    // informational dialog with no automatic navigation at all, and let
+    // the driver open Settings themselves from their home screen. It's
+    // less convenient, but there is no intent-launch left for a plugin
+    // (or a mis-timed resume callback) to crash on.
     try {
-      await _showAutoStartStep();
+      await _showBatterySettingsGuide();
     } catch (error) {
-      debugPrint('OEM auto-start/battery guide failed: $error');
+      debugPrint('Battery settings guide failed: $error');
     }
 
-    // Whatever the driver did (allowed it, skipped it, or the dialog
-    // itself failed) - verify the actual current state rather than
-    // assuming the dialogs worked, and let the ride-screen banner take
-    // it from here.
     await _checkBatteryOptimizationStatus();
   }
 
@@ -370,132 +369,34 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _showAutoStartStep() async {
+  /// A single, purely informational dialog - it does NOT launch any
+  /// Settings intent itself. The driver is told exactly what to go do in
+  /// their own Settings app. No automatic navigation, no chained
+  /// follow-up dialog, no dependency on an app-resume callback - so
+  /// there is nothing left in this flow for a flaky OEM Settings
+  /// integration to crash.
+  Future<void> _showBatterySettingsGuide() async {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      barrierDismissible: false,
+      barrierDismissible: true,
       builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('Allow Auto-Start'),
+        title: const Text('One-time phone setup for reliable tracking'),
         content: const Text(
           'To keep tracking your ride reliably in the background, please '
-          'allow YATRI CABS to auto-start on this phone. Tap Continue to '
-          'open Battery Optimization settings, find YATRI CABS, and set '
-          'it to "Don\'t optimize" / "Unrestricted", then come back here.',
+          'open your phone\'s Settings app (outside YATRI CABS) and do the '
+          'following for YATRI CABS:\n\n'
+          '1. Battery > YATRI CABS > set to "Unrestricted" / "Don\'t '
+          'optimize"\n'
+          '2. If your phone has an "Autostart" or "Protected apps" list '
+          '(Xiaomi, Vivo, Oppo, and others), turn it on for YATRI CABS\n'
+          '3. If asked, also allow "Display over other apps"\n\n'
+          'You only need to do this once.',
         ),
         actions: <Widget>[
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Skip'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.of(dialogContext).pop();
-              try {
-                await AppSettings.openAppSettings(
-                  type: AppSettingsType.batteryOptimization,
-                );
-              } catch (error) {
-                debugPrint('Battery optimization settings failed: $error');
-              }
-              // Give the OS a moment to finish closing its own settings
-              // screen and return focus here before showing the next step.
-              await Future.delayed(const Duration(milliseconds: 600));
-              await _showBatterySettingsStep();
-            },
-            child: const Text('Continue'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showBatterySettingsStep() async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('Additional battery settings'),
-        content: const Text(
-          'Some phones (Xiaomi, Vivo, Oppo, Samsung, and others) have '
-          'extra battery restrictions beyond standard Android. Tap '
-          'Continue to open this app\'s settings page, then look for a '
-          '"Battery", "Autostart", or "Protected apps" section there and '
-          'allow YATRI CABS so ride tracking isn\'t interrupted mid-route.',
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Skip'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.of(dialogContext).pop();
-              try {
-                await AppSettings.openAppSettings();
-              } catch (error) {
-                debugPrint('App settings failed: $error');
-              }
-              await Future.delayed(const Duration(milliseconds: 600));
-              await _showOverlayPermissionStep();
-            },
-            child: const Text('Continue'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// "Display over other apps" (SYSTEM_ALERT_WINDOW) does not, by itself,
-  /// keep a background service alive - that's the battery-optimization
-  /// and auto-start settings above. This is requested separately because
-  /// some OEM auto-start/protected-app screens (notably Xiaomi's) will
-  /// not function correctly unless the app also holds this permission,
-  /// so asking for it here improves the odds the steps above actually
-  /// stick on those phones.
-  ///
-  /// This uses flutter_overlay_window's own requestPermission(), which
-  /// opens Android's standard "Display over other apps" settings page
-  /// for this app - a normal, universal Android settings screen, not a
-  /// manufacturer-specific deep link, so it does not carry the same
-  /// crash risk the old disable_battery_optimization calls did.
-  Future<void> _showOverlayPermissionStep() async {
-    if (!mounted) return;
-
-    bool alreadyGranted = false;
-    try {
-      alreadyGranted = await FlutterOverlayWindow.isPermissionGranted();
-    } catch (error) {
-      debugPrint('Overlay permission check failed: $error');
-    }
-    if (alreadyGranted) return;
-
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('Allow Display Over Other Apps'),
-        content: const Text(
-          'Some phones need this permission for the auto-start setting '
-          'above to actually work. Tap Continue and allow "Display over '
-          'other apps" for YATRI CABS, then come back here.',
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Skip'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.of(dialogContext).pop();
-              try {
-                await FlutterOverlayWindow.requestPermission();
-              } catch (error) {
-                debugPrint('Overlay permission request failed: $error');
-              }
-            },
-            child: const Text('Continue'),
+            child: const Text('Got it'),
           ),
         ],
       ),
