@@ -29,6 +29,14 @@ specific conditions - not under ideal flat-open-urban GPS conditions.
 
 *(Newest entries at the top. One line each: what, and the one-line why.)*
 
+- **Second MIUI crash fixed: leftover native battery-optimization
+  intent removed** - `MainActivity.kt` had a leftover native
+  `onCreate()` override auto-launching a Settings intent unconditionally
+  on every launch, with no context; this duplicated (and could race
+  against) the proper Dart-side flow and matched the exact "unprompted
+  OEM settings intent" pattern already known to crash MIUI. Deleted
+  rather than guarded. `WakelockPlus`/`Floating` (PiP) calls also now
+  wrapped in try-catch as cheap insurance.
 - **Current + average speed monitoring** - a small speedometer card
   (current speed live, trip-average below) on the map and in the PiP
   view; average speed's elapsed-time reference survives crash-recovery

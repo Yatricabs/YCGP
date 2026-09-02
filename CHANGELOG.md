@@ -6,6 +6,24 @@ other remote no-network stretches, billed purely from GPS.
 
 ---
 
+### Second real-device crash: leftover native battery-optimization intent
+**What:** Removed a native `MainActivity.kt` override that auto-launched
+`Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` unconditionally
+on every `onCreate()`, with no driver-facing context. Also defensively
+wrapped `WakelockPlus`/`Floating` (PiP) enable/disable calls in
+try-catch as cheap insurance.
+**Why:** "YATRI CABS keeps stopping" recurred on a Xiaomi/MIUI device
+even after the Dart-side plugin causing the *first* crash (see next
+entry below) was removed. This native code was a leftover from an
+earlier, purely-native approach to battery-optimization exemption that
+should have been deleted when the app moved to the safer Dart-side
+`permission_handler` + guided-dialog flow, but wasn't. It fired an
+unprompted Settings intent on literally every activity creation and
+could race against the Dart-side flow doing the same job properly -
+exactly the "auto-launch an OEM settings intent with no context" pattern
+already known to be risky on MIUI, just via a different code path this
+time.
+
 ### Current + average speed monitoring
 **What:** A small speedometer card on the map (current speed, live) plus
 trip-average speed below it; also shown compactly in the PiP floating

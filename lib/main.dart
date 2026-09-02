@@ -535,9 +535,27 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     // Keep the screen from turning off for the entire ride, and let the
     // app shrink into a small floating window (like Google Maps
     // navigation) instead of going fully into the background whenever the
-    // driver switches to another app while a ride is active.
-    WakelockPlus.enable();
-    _floating.enable(const OnLeavePiP());
+    // driver switches to another app while a ride is active. Both are
+    // wrapped defensively - PiP support in particular is inconsistent
+    // across OEM Android skins, and neither feature is critical enough
+    // to be worth risking an app crash over if the native side misbehaves.
+    try {
+      WakelockPlus.enable();
+    } catch (error) {
+      debugPrint('Wakelock enable failed: $error');
+    }
+    try {
+      _floating.enable(const OnLeavePiP());
+    } catch (error) {
+      debugPrint('PiP enable failed: $error');
+      unawaited(
+        _eventLogger.log(
+          EventSeverity.warning,
+          'PIP_ENABLE_FAILED',
+          'Could not enable Picture-in-Picture on leave: $error',
+        ),
+      );
+    }
 
     if (mounted) setState(() {});
 
@@ -816,8 +834,16 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
     _rideActive = false;
-    WakelockPlus.disable();
-    _floating.cancelOnLeavePiP();
+    try {
+      WakelockPlus.disable();
+    } catch (error) {
+      debugPrint('Wakelock disable failed: $error');
+    }
+    try {
+      _floating.cancelOnLeavePiP();
+    } catch (error) {
+      debugPrint('PiP cancel failed: $error');
+    }
     // Ride finished cleanly - nothing left to recover on next launch.
     unawaited(_persistence.clear());
     if (mounted) setState(() {});
@@ -829,7 +855,11 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     _positionSubscription?.cancel();
     _watchdogTimer?.cancel();
     _mapController?.dispose();
-    WakelockPlus.disable();
+    try {
+      WakelockPlus.disable();
+    } catch (error) {
+      debugPrint('Wakelock disable failed: $error');
+    }
     super.dispose();
   }
 
