@@ -385,8 +385,39 @@ class _RideScreenState extends State<RideScreen> {
       permission = await Geolocator.requestPermission();
     }
 
-    return permission == LocationPermission.whileInUse ||
+    final bool locationOk = permission == LocationPermission.whileInUse ||
         permission == LocationPermission.always;
+    if (!locationOk) return false;
+
+    // GPS tracking runs as an Android foreground service with a
+    // persistent notification (see _subscribeToPositionStream). On
+    // Android 13+ that notification needs POST_NOTIFICATIONS, and on
+    // Android 15 specifically, starting the foreground service *before*
+    // this is granted has been seen to crash the whole app with
+    // "CannotPostForegroundServiceNotificationException: Bad
+    // notification for startForeground" instead of just failing to show
+    // the notification. Request it here, before the ride (and its
+    // foreground service) starts, so the service never races ahead of
+    // the permission.
+    await _ensureNotificationPermission();
+
+    return true;
+  }
+
+  /// See the call site in [_ensureLocationPermission] for why this runs
+  /// before the ride's foreground-service GPS tracking starts. Not
+  /// fatal if denied - the ride still starts - but the persistent
+  /// tracking notification may not show, and on some Android versions
+  /// the crash this guards against could resurface.
+  Future<void> _ensureNotificationPermission() async {
+    try {
+      final ph.PermissionStatus status = await ph.Permission.notification.status;
+      if (!status.isGranted) {
+        await ph.Permission.notification.request();
+      }
+    } catch (error) {
+      debugPrint('Notification permission request failed: $error');
+    }
   }
 
   void _startRideTracking(Position startingPosition, {RideProgress? resumeFrom}) {

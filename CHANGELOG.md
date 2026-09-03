@@ -6,6 +6,28 @@ other remote no-network stretches, billed purely from GPS.
 
 ---
 
+### Fixed a crash on ride start: `CannotPostForegroundServiceNotificationException`
+**What:** Added the `POST_NOTIFICATIONS` permission to the manifest,
+and now request it (via `permission_handler`) right after location
+permission is granted, before the ride's GPS tracking - which runs as
+an Android foreground service with a persistent notification - starts.
+**Why:** The v32 crash report showed `android.app.RemoteService
+Exception$CannotPostForegroundServiceNotificationException: Bad
+notification for startForeground`, thrown from `geolocator`'s internal
+location foreground service. This is unrelated to the earlier
+battery-optimization changes. It's a known issue with the `geolocator`
+plugin on newer Android versions (reported on Android 15/API 35):
+without `POST_NOTIFICATIONS` granted first, starting the foreground
+service's notification can crash the whole app instead of just
+silently failing to show it. Requesting the permission up front, before
+the service starts, avoids that race. This does not guarantee the
+underlying plugin bug can never resurface (it's inside `geolocator`'s
+own native code, not our code) - if it still crashes after this,
+the next step is to test the ride flow on the same phone/Android
+version to reproduce and check for a newer `geolocator` release.
+
+---
+
 ### Battery-optimization handling simplified back to the standard-only flow
 **What:** Removed the entire guidance/verification/banner layer around
 battery optimization: the manual-instructions dialog
