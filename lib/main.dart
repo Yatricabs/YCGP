@@ -50,7 +50,7 @@ class RideScreen extends StatefulWidget {
   State<RideScreen> createState() => _RideScreenState();
 }
 
-class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
+class _RideScreenState extends State<RideScreen> {
   // ------------------------------------------------------------
   // BUSINESS REQUIREMENT
   // Estimated distance is intentionally hard-coded.
@@ -89,15 +89,6 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
   bool _permissionDenied = false;
   String _status = 'Getting GPS location...';
   String _gpsSignalStatus = 'GPS: Searching...';
-
-  // Unlike the standard Android battery-optimization exemption (a real
-  // permission we can request and verify), the OEM-specific auto-start /
-  // protected-app list has no API to enable it programmatically - only
-  // the driver can flip it in their phone's own settings. A one-time
-  // dialog is too easy to tap past and forget, so this stays true (and
-  // a visible banner keeps showing) until we've actually verified it's
-  // been turned on.
-  bool _batteryOptimizationConcern = false;
   DateTime? _rideStartTime;
   double _currentSpeedKmh = 0;
   BitmapDescriptor _carIcon = BitmapDescriptor.defaultMarker;
@@ -150,23 +141,8 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _generateCarIcon();
     _initializeRide();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.resumed && _rideActive) {
-      // The driver may have just come back from their phone's own
-      // Settings app after following the battery/autostart guide - only
-      // recheck the standard exemption we CAN verify (see
-      // _checkBatteryOptimizationStatus), right away instead of waiting
-      // for the next periodic check, so the banner clears as soon as
-      // it's actually fixed.
-      unawaited(_checkBatteryOptimizationStatus());
-    }
   }
 
   /// Draws a small white top-view car marker entirely in code (no external
@@ -315,6 +291,30 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Asks Android's standard battery-optimization exemption once, right
+  /// after location permission is granted. This is intentionally the
+  /// ONLY thing this does now.
+  ///
+  /// HISTORY, for whoever touches this next: this used to also (1) call
+  /// the disable_battery_optimization plugin's native OEM-specific
+  /// dialogs, which crashed the app on a real Xiaomi/MIUI device; then,
+  /// after removing that, (2) show a manual-instructions dialog plus a
+  /// persistent in-app banner that re-verified the exemption on a timer
+  /// and on every app-resume via a WidgetsBindingObserver. That flow was
+  /// *also* implicated in a second "YATRI CABS keeps stopping" crash on
+  /// the same device (traced to a separate leftover native onCreate()
+  /// intent-launch, not this Dart code directly - but the whole feature
+  /// area had become the recurring suspect).
+  ///
+  /// Given two crashes traced back to this general area, the guidance/
+  /// verification/banner layer was removed entirely rather than patched
+  /// a third time. This now does only what the standard Android API
+  /// supports directly and reliably: request the exemption, once,
+  /// silently, and move on - whatever the OEM allows through that
+  /// standard call is what the app gets. No custom OEM-specific
+  /// auto-start guidance, no persistent reminder banner, no repeated
+  /// verification. Less thorough, but this exact feature is not worth
+  /// re-risking an app crash over again.
   Future<void> _requestBatteryOptimizationExemption() async {
     try {
       final ph.PermissionStatus status =
@@ -325,96 +325,6 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
     } catch (error) {
       debugPrint('Battery optimization exemption request failed: $error');
     }
-
-    // Standard Android battery-optimization exemption (above) does NOT
-    // cover OEM-specific background restrictions - Xiaomi's MIUI,
-    // Oppo/Realme's ColorOS, Vivo's FuntouchOS, and some Samsung builds
-    // each ship their own separate "auto-start"/"protected apps" list
-    // that sits entirely outside the standard Android API. There is no
-    // programmatic way to enable these - only to guide the driver to the
-    // right settings screen.
-    //
-    // IMPORTANT - history of this function, for whoever touches it next:
-    // this used to (1) call the disable_battery_optimization plugin's
-    // native OEM-specific dialogs, which crashed instantly on an
-    // unrecognised device/manufacturer (uncatchable native
-    // ActivityNotFoundException), then (2) call app_settings'
-    // openAppSettings() in an auto-chained sequence of three dialogs
-    // triggered off app-resume. On a real Xiaomi/MIUI test device, THAT
-    // also crashed the app ("YATRI CABS keeps stopping") right after
-    // tapping Continue on the second dialog in the chain.
-    //
-    // Two different plugins, two different crashes, both centered on
-    // automatically launching a Settings intent and/or auto-chaining a
-    // follow-up dialog off an app-resume signal. Rather than try a third
-    // plugin, this now does the minimum-risk thing: show ONE plain
-    // informational dialog with no automatic navigation at all, and let
-    // the driver open Settings themselves from their home screen. It's
-    // less convenient, but there is no intent-launch left for a plugin
-    // (or a mis-timed resume callback) to crash on.
-    try {
-      await _showBatterySettingsGuide();
-    } catch (error) {
-      debugPrint('Battery settings guide failed: $error');
-    }
-
-    await _checkBatteryOptimizationStatus();
-  }
-
-  /// Checks whether the standard Android battery-optimization exemption
-  /// is actually in place right now. There is no safe, universal way to
-  /// verify the OEM-specific auto-start setting (see note above on why
-  /// the plugin that used to check this was removed), so this focuses
-  /// on the one signal we can check reliably without crash risk.
-  Future<void> _checkBatteryOptimizationStatus() async {
-    bool concern = false;
-
-    try {
-      final ph.PermissionStatus status =
-          await ph.Permission.ignoreBatteryOptimizations.status;
-      if (!status.isGranted) concern = true;
-    } catch (error) {
-      debugPrint('Battery optimization status check failed: $error');
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _batteryOptimizationConcern = concern;
-    });
-  }
-
-  /// A single, purely informational dialog - it does NOT launch any
-  /// Settings intent itself. The driver is told exactly what to go do in
-  /// their own Settings app. No automatic navigation, no chained
-  /// follow-up dialog, no dependency on an app-resume callback - so
-  /// there is nothing left in this flow for a flaky OEM Settings
-  /// integration to crash.
-  Future<void> _showBatterySettingsGuide() async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('One-time phone setup for reliable tracking'),
-        content: const Text(
-          'To keep tracking your ride reliably in the background, please '
-          'open your phone\'s Settings app (outside YATRI CABS) and do the '
-          'following for YATRI CABS:\n\n'
-          '1. Battery > YATRI CABS > set to "Unrestricted" / "Don\'t '
-          'optimize"\n'
-          '2. If your phone has an "Autostart" or "Protected apps" list '
-          '(Xiaomi, Vivo, Oppo, and others), turn it on for YATRI CABS\n'
-          '3. If asked, also allow "Display over other apps"\n\n'
-          'You only need to do this once.',
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Got it'),
-          ),
-        ],
-      ),
-    );
   }
 
   /// Educates the driver on the one thing no amount of code can fully
@@ -581,12 +491,6 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
 
   void _checkPositionStreamHealth(Timer timer) {
     if (!_rideActive) return;
-
-    // Piggybacks on the existing 30-second watchdog tick rather than
-    // running its own separate timer - cheap enough to check this often,
-    // and it means the banner clears within 30s of the driver fixing it
-    // even if they never background/foreground the app.
-    unawaited(_checkBatteryOptimizationStatus());
 
     final DateTime? lastFixTime = _previousFixTime;
     if (lastFixTime == null) return;
@@ -851,7 +755,6 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _positionSubscription?.cancel();
     _watchdogTimer?.cancel();
     _mapController?.dispose();
@@ -1162,53 +1065,6 @@ class _RideScreenState extends State<RideScreen> with WidgetsBindingObserver {
               ),
             ),
           if (_locationReady && !_permissionDenied) _buildSpeedCard(),
-          if (_batteryOptimizationConcern && !_permissionDenied)
-            Positioned(
-              bottom: 12,
-              left: 12,
-              right: 12,
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () {
-                    unawaited(_requestBatteryOptimizationExemption());
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 9,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF3E0),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: const Color(0xFFEF6C00)),
-                    ),
-                    child: const Row(
-                      children: <Widget>[
-                        Icon(
-                          Icons.battery_alert,
-                          color: Color(0xFFEF6C00),
-                          size: 20,
-                        ),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'Battery settings not optimized - tap to fix '
-                            'so tracking doesn\'t stop mid-ride',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFFEF6C00),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
     );

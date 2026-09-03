@@ -220,7 +220,7 @@ sync in 2.4 - no backend URL was available at the time this was built.
 It never clears the local queue before a confirmed successful delivery,
 so an event is never silently lost even if a sync attempt fails.
 
-### 2.11 Maximizing background reliability (and its honest limits)
+### 2.11 Background reliability - kept deliberately simple after two crashes
 **No Android app can guarantee it will *never* be killed** - the OS
 reserves the right to kill any process under extreme memory pressure
 (this applies to Uber, Ola, Google Maps, and every other app equally,
@@ -228,59 +228,53 @@ not just this one), and several OEMs (Xiaomi/MIUI, Oppo/Realme/ColorOS,
 Vivo/FuntouchOS, some Samsung builds) ship their own background-app
 killers that sit entirely outside standard Android APIs - there is no
 code-level way to disable those, only to guide the user to the right
-settings screen. Everything below pushes reliability as high as is
-actually possible within those real constraints:
+settings screen.
 
-- **Battery-settings guide (informational, no automatic Settings
-  launch).** `_showBatterySettingsGuide` shows a single plain dialog
-  telling the driver exactly what to go set manually (Battery >
-  Unrestricted, plus their phone's Autostart/Protected-apps list if it
-  has one) - it does **not** launch any Settings intent itself. An
-  earlier version used the `disable_battery_optimization` plugin to
-  auto-launch OEM-specific settings screens; on a real Xiaomi/MIUI test
-  device this crashed the app outright ("YATRI CABS keeps stopping")
-  right after tapping Continue. That plugin was removed entirely rather
-  than patched - one plain dialog with zero automatic navigation has
-  nothing left in the flow for a flaky OEM Settings integration to
-  crash on.
-- **Persistent verification banner, not a one-time dialog.**
-  `_checkBatteryOptimizationStatus` actually checks (via
-  `permission_handler`, the one signal that can be verified reliably)
-  whether the standard battery-optimization exemption is really
-  granted - it doesn't just assume the dialog worked. If not, an orange
-  banner ("Battery settings not optimized - tap to fix...") stays
-  visible at the bottom of the ride screen. This re-checks at three
-  points: right when the ride starts, every 30 seconds (piggybacked on
-  the existing GPS watchdog timer - no separate `Timer` needed), and
-  immediately when the app resumes from the background
-  (`WidgetsBindingObserver.didChangeAppLifecycleState`) - so if the
-  driver goes into Settings and fixes it, the banner disappears the
-  moment they come back, without waiting up to 30 seconds. Tapping the
-  banner re-opens the guide dialog. A driver dismissing the dialog once
-  no longer makes the reminder go away for the rest of the ride - this
-  is a real compliance nudge, not just a first-launch formality.
-- **GPS-stream watchdog.** A 30-second-interval check
-  (`_checkPositionStreamHealth`) restarts the location stream if no fix
-  has arrived for 90+ seconds. Covers the case where the underlying
-  stream silently stalls without throwing a catchable error - a genuine
-  deep-signal-loss stretch is harmless to restart into (still no signal
-  either way), so this is a safe, self-healing measure either way, and a
-  `GPS_STREAM_WATCHDOG_RESTART` event is logged so the pattern is
-  visible later if it happens often on a particular device.
+**This area went through two real-device crashes before landing here,
+both on the same Xiaomi/MIUI phone ("YATRI CABS keeps stopping"):**
+1. The `disable_battery_optimization` plugin's native OEM-specific
+   settings launcher crashed the app outright.
+2. After removing that, a from-scratch replacement (manual-instructions
+   dialog + a persistent verification banner + periodic re-checks via a
+   `WidgetsBindingObserver`) was built - but the crash recurred anyway,
+   this time traced to an unrelated leftover native
+   `MainActivity.onCreate()` override that had nothing to do with the
+   new Dart flow but was auto-launching its own unprompted Settings
+   intent on every app start (removed - see CHANGELOG).
+
+Given two crashes traced back to this general feature area, the
+decision was made to **stop trying to be clever here.** Everything past
+the single standard Android exemption request - OEM-specific guidance,
+the persistent reminder banner, the periodic/on-resume re-verification -
+was removed rather than patched a third time:
+
+- **`_requestBatteryOptimizationExemption()` now does exactly one
+  thing:** request the standard Android battery-optimization exemption
+  once, silently, via `permission_handler`, right after location
+  permission is granted. No dialog, no OEM-specific guidance, no
+  verification loop, no banner. Whatever the OEM allows through that one
+  standard, well-tested API call is what the app gets - nothing more is
+  attempted.
+- **`WakelockPlus`/`Floating` (PiP) enable/disable calls are wrapped in
+  try-catch** as cheap insurance against native failures on quirky OEM
+  builds, even though neither was the actual cause of either crash.
+- **GPS-stream watchdog** (`_checkPositionStreamHealth`, unrelated to
+  battery settings) still restarts the location stream if no fix has
+  arrived for 90+ seconds - a genuine deep-signal-loss stretch is
+  harmless to restart into either way, and a `GPS_STREAM_WATCHDOG_
+  RESTART` event is logged if it happens often on a particular device.
 - **Driver education, not just code.** One thing genuinely cannot be
   solved from the app side: on some OEMs, force-swiping the app away
   from the recent-apps list can still kill even a foreground service.
   A one-time dialog (`_showKeepAppOpenWarning`) tells the driver this
-  plainly when a ride starts - the app works fine locked/backgrounded/
-  switched-away-from, just don't force-close it mid-ride.
+  plainly when a ride starts.
 
-Combined with the crash-safe persistence (2.4), this pushes compliance
-as high as realistically achievable without ever claiming a guarantee
-the OS itself doesn't offer - a driver actively force-closing the app
-from recents, or the OS killing it under genuine extreme memory
-pressure, are the two failure modes that remain, and both are now
-either nudged against repeatedly or explicitly communicated rather than
-silent.
+Combined with the crash-safe persistence (2.4), this is the pragmatic
+tradeoff: less thorough battery-optimization coverage than the removed
+approach aimed for, in exchange for a much smaller, better-understood
+risk surface. If OEM-specific battery/auto-start guidance is worth
+revisiting later, it should be re-approached carefully (see
+`GPS_TRACKING_NOTES.md`) rather than reintroduced wholesale.
 
 ### 2.12 Current + average speed monitoring
 A small speedometer-style card in the top-left of the map shows

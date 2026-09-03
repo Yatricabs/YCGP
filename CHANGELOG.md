@@ -6,6 +6,30 @@ other remote no-network stretches, billed purely from GPS.
 
 ---
 
+### Battery-optimization handling simplified back to the standard-only flow
+**What:** Removed the entire guidance/verification/banner layer around
+battery optimization: the manual-instructions dialog
+(`_showBatterySettingsGuide`), the persistent orange reminder banner,
+the periodic + on-app-resume re-verification
+(`_checkBatteryOptimizationStatus`, piggybacked on the GPS watchdog),
+and the `WidgetsBindingObserver` mixin that powered the resume-recheck.
+`_requestBatteryOptimizationExemption()` now does exactly one thing:
+request the standard Android exemption once, silently, via
+`permission_handler`, and stop there.
+**Why:** Two separate real-device crashes on the same Xiaomi/MIUI phone
+("YATRI CABS keeps stopping") both traced back to this general feature
+area - first a plugin's native OEM-settings launcher, then (after
+removing that) a leftover native `MainActivity` intent-launch that
+turned out to be unrelated to the new Dart flow but kept the same
+feature area under suspicion. Rather than risk a third crash chasing
+more thorough OEM-specific coverage, the call was made to accept
+whatever level of exemption the single standard Android API grants -
+"as much as the OEM allows through the normal channel, nothing more" -
+and stop building extra layers on top of it. Less thorough, but this
+was the recurring source of app-breaking bugs for a driver-billing app;
+reliability of the *core* app now matters more than maximizing
+battery-optimization compliance specifically.
+
 ### Second real-device crash: leftover native battery-optimization intent
 **What:** Removed a native `MainActivity.kt` override that auto-launched
 `Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` unconditionally

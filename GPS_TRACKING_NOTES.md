@@ -29,6 +29,15 @@ specific conditions - not under ideal flat-open-urban GPS conditions.
 
 *(Newest entries at the top. One line each: what, and the one-line why.)*
 
+- **Battery-optimization handling simplified back to standard-only** -
+  removed the manual-guide dialog, persistent reminder banner, and
+  periodic/on-resume re-verification (and the `WidgetsBindingObserver`
+  that powered it) after two separate real-device crashes on the same
+  MIUI phone were both traced to this general feature area. Now only
+  requests the single standard Android exemption, silently, once - no
+  OEM-specific guidance layer on top. Accepts "whatever the OEM allows
+  through the normal channel" instead of chasing more thorough coverage
+  that kept causing crashes.
 - **Second MIUI crash fixed: leftover native battery-optimization
   intent removed** - `MainActivity.kt` had a leftover native
   `onCreate()` override auto-launching a Settings intent unconditionally
@@ -94,6 +103,17 @@ specific conditions - not under ideal flat-open-urban GPS conditions.
 raised once doesn't get lost. Move an item up to section 2 once it's
 actually implemented.)*
 
+- **OEM-specific battery/auto-start guidance - deliberately removed,
+  approach with caution if revisited.** Two real-device crashes on the
+  same Xiaomi/MIUI phone were both traced to this feature area (a native
+  OEM-settings-launcher plugin, then an unrelated leftover native
+  intent-launch in the same neighborhood of code). Currently the app
+  only requests the standard Android exemption and stops there. If this
+  is worth revisiting for real compliance gains, test any new approach
+  extensively on real MIUI/ColorOS/FuntouchOS devices (not just an
+  emulator) before shipping, and strongly prefer anything that shows the
+  driver a plain in-app dialog over anything that auto-launches an OEM
+  Settings intent.
 - **Backend sync wiring** - `EventLogger.trySync()` and the Kafka/REST
   distance-sync pipeline are both designed for this but not connected -
   no backend endpoint was available yet. Needs the actual API URL/auth
