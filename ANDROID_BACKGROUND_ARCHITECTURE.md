@@ -250,15 +250,15 @@ Every test should verify the same invariant:
 The source package has been statically inspected in the working environment.
 The environment used for this packaging pass does not contain the Flutter SDK,
 Android SDK/ADB, or a connected physical Android device, so a release APK and
-OEM field test cannot honestly be marked as executed here. The repository still
-contains GitHub Actions/Codemagic build definitions for performing the real
-Flutter/Android build.
+OEM field test cannot honestly be marked as executed here. The repository contains GitHub Actions/Codemagic build definitions for the
+real Flutter/Android build. GitHub Actions uses the direct Gradle release path
+described in README.md.
 
 Required final validation sequence:
 
 1. `flutter pub get`
 2. `flutter analyze`
-3. `flutter build apk --release`
+3. `gradle :app:assembleRelease` (or the included GitHub Actions workflow)
 4. Install the release APK on representative Xiaomi/Redmi/POCO, OPPO/realme,
    Samsung, OnePlus, vivo, and Lava/Android Go devices.
 5. Execute the active-ride test matrix in this document, including screen-off,

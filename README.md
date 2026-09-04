@@ -339,23 +339,29 @@ leaks from the repo.
 ## 4. Build the APK (recommended: GitHub Actions)
 
 FlutLab's own web build server can intermittently fail with a generic
-`Request failed with status code 400` before Gradle even runs. This
-project ships with a ready-to-use GitHub Actions workflow so the build
-doesn't depend on FlutLab's server at all.
+`Request failed with status code 400` before Gradle even runs. This project
+ships with a GitHub Actions workflow so the Android release build does not
+depend on FlutLab's server.
 
-1. Create a new **private** GitHub repository.
-2. Push this entire folder's contents to that repo's `main` branch.
-3. Go to the repo's **Actions** tab - `Build Android APK` runs
-   automatically on every push (or **Run workflow** to trigger manually).
-4. Once green, open the run and scroll to **Artifacts** - download
-   `yatri-cabs-release-apk`, which contains `app-release.apk`.
+The CI workflow builds `:app:assembleRelease` directly with Gradle 8.12
+after Flutter dependencies are resolved. This is intentional: the previous
+`flutter build apk --release` path could finish the underlying Gradle work
+without allowing Flutter's output-discovery step to find the generated APK,
+reporting `Gradle build failed to produce an .apk file`. The workflow now
+verifies the real AGP output path before uploading the artifact.
+
+1. Push the project to the **dev** or **main** branch.
+2. GitHub Actions runs automatically for both branches (or use **Run workflow**).
+3. Open the successful `Build Android APK` run and scroll to **Artifacts**.
+4. Download `yatri-cabs-apk-dev` for the dev branch or
+   `yatri-cabs-apk-main` for the main branch.
+
+The generated release APK is copied from
+`android/app/build/outputs/apk/release/app-release.apk`.
 
 ### Alternative: Codemagic
-A `codemagic.yaml` is included. Connect the same repo at codemagic.io,
-it auto-detects the `yatri-cabs-android` workflow - click **Start new
-build**, then download the APK from **Artifacts**.
-
----
+A `codemagic.yaml` is included. Connect the same repo at codemagic.io and
+start the configured Android workflow.
 
 ## 5. Build configuration reference
 
@@ -367,15 +373,11 @@ build**, then download the APK from **Artifacts**.
   `floating ^6.0.0`, `shared_preferences ^2.3.3`,
   `permission_handler ^11.3.1`
 
-### Gradle build fix (still included)
-Flutter tooling sometimes reports `Gradle build failed to produce an
-.apk file` because it looks for the APK at
-`build/app/outputs/flutter-apk/app-release.apk`, while the AGP version
-in use here actually produces it at
-`android/app/build/outputs/apk/release/app-release.apk`. `app/build.gradle.kts`
-copies the release APK to Flutter's expected path automatically after
-`assembleRelease` (this also matches the path GitHub Actions/Codemagic
-look for above).
+### Gradle release-build path
+The Android Gradle Plugin writes the release APK to
+`android/app/build/outputs/apk/release/app-release.apk`. The GitHub Actions
+workflow now invokes Gradle 8.12 directly and verifies that exact output before
+uploading it. No custom Gradle task hook or APK-copy hook is used.
 
 ---
 

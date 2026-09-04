@@ -1,4 +1,4 @@
-# YATRI CABS v1.0.2+3 — Validation Status
+# YATRI CABS v1.0.3+4 — Validation Status
 
 ## Completed in this packaging environment
 
@@ -10,12 +10,14 @@
 - Verified active-ride service/task-removal/PiP communication code is present.
 - Verified documentation files are present and updated.
 - Verified the output archive with `unzip -t` after packaging.
+- Replaced the CI `flutter build apk --release` step with direct Gradle 8.12 `:app:assembleRelease`, explicit APK discovery, and branch-specific artifact upload.
+- Updated documentation for the new CI build path.
 
 ## Not executed here
 
 - Flutter package resolution (`flutter pub get`).
 - Dart static analysis (`flutter analyze`).
-- Release APK compilation (`flutter build apk --release`).
+- Release APK compilation in this packaging environment (Flutter/Android SDK unavailable). The repository CI workflow now performs `gradle :app:assembleRelease` with Gradle 8.12.
 - Installation on a physical Android phone.
 - Xiaomi/Redmi/POCO, OPPO/realme, Samsung, OnePlus, vivo, Lava, or Android Go OEM behavior tests.
 
@@ -23,7 +25,7 @@ The reason is environmental: this working container does not provide the Flutter
 
 ## Required release-gate tests
 
-1. Build release APK with the repository's Flutter/Android toolchain.
+1. Build the release APK using the repository CI workflow or `gradle :app:assembleRelease`.
 2. Install the release APK.
 3. Start an active ride while the app is visible.
 4. Confirm the ongoing YATRI active-ride notification appears.

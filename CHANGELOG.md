@@ -1,3 +1,17 @@
+## 1.0.3+4 — CI release-build hardening
+
+- Updated GitHub Actions to build the Android release with Gradle 8.12
+  directly instead of relying on `flutter build apk --release` to discover
+  the generated APK.
+- Added explicit CI creation of `android/local.properties` with the Flutter
+  and Android SDK paths.
+- Added explicit APK discovery/verification at
+  `android/app/build/outputs/apk/release/app-release.apk`.
+- Enabled `dev` and `main` branch automatic builds and branch-specific artifact
+  names.
+- Kept the Android GPS/FGS, billing, PiP, persistence, and OEM-resilience code
+  unchanged.
+
 ## 1.0.2+3 — Build/OEM hardening
 
 - Removed the custom `assembleRelease` APK-copy Gradle hook to keep the Android build graph on the standard Flutter/AGP path.
