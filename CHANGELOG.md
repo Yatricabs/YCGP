@@ -5,7 +5,7 @@
 - Added the official Gradle 8.12 wrapper-JAR checksum reference.
 - Kept GPS/FGS, billing, PiP, persistence, and UI behavior unchanged.
 
-## 1.0.4+5 — CI wrapper-path fix
+## 1.0.5+6 — CI wrapper-path fix
 
 - Removed all GitHub Actions references to `./android/gradlew` because this repository intentionally uses the GitHub-hosted Gradle 8.12 installation and does not contain the Gradle wrapper script.
 - CI now verifies the installed Gradle executable with `gradle --version`.
@@ -32,6 +32,12 @@
 - Removed the custom `assembleRelease` APK-copy Gradle hook to keep the Android build graph on the standard Flutter/AGP path.
 - Kept the native location Foreground Service, notification safety, service health, PiP, task-removal recovery, and existing GPS billing logic unchanged.
 - Added explicit release/test notes documenting what was statically verified and what still requires a real Flutter/Android build and physical-device validation.
+
+## 1.0.5+6 — GitHub Actions executable-bit fix
+
+- Added an explicit `chmod +x android/gradlew` step before invoking the Gradle Wrapper.
+- This protects CI from GitHub web-upload paths that may commit the wrapper script without the POSIX executable bit.
+- Kept the standard Gradle Wrapper build path and all GPS/FGS/billing/PiP code unchanged.
 
 # Changelog
 

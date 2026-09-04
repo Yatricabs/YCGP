@@ -1,4 +1,4 @@
-# YATRI CABS v1.0.4+5 — Validation Status
+# YATRI CABS v1.0.5+6 — Validation Status
 
 ## Completed in this packaging environment
 
@@ -46,3 +46,7 @@ The reason is environmental: this working container does not provide the Flutter
 - CI generates the official Gradle Wrapper JAR with `gradle wrapper --gradle-version 8.12` before invoking `./gradlew`.
 - The official binary wrapper JAR was not fabricated in this packaging environment because no local Gradle distribution was available and external binary retrieval was unavailable.
 - The official Gradle 8.12 wrapper JAR checksum is recorded in `android/gradle/wrapper/gradle-wrapper.jar.sha256` for verification when the JAR is generated on a developer/CI machine.
+
+## v1.0.5+6 CI patch
+
+The GitHub Actions workflow now explicitly runs `chmod +x android/gradlew` before executing the wrapper. This is required when the repository files were added/updated through a web upload path that does not preserve the POSIX executable bit.
