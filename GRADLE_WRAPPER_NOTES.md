@@ -44,3 +44,8 @@ Before a developer commits the generated JAR from a machine with Gradle installe
 ## GitHub web-upload executable bit
 
 When `android/gradlew` is added or replaced through GitHub's web upload UI, the file can arrive in the repository without its POSIX executable mode. GitHub Actions therefore runs `chmod +x android/gradlew` before `./gradlew --version` and the release build. This does not change the script contents; it only restores the required executable permission on the CI runner.
+
+
+## CI ordering correction (v42)
+
+GitHub's web upload can store `android/gradlew` without the executable bit. The workflow therefore must not execute `./gradlew` before `chmod +x android/gradlew`. The initial environment check uses the runner-installed `gradle --version`; wrapper generation and permission restoration happen before any `./gradlew` invocation.

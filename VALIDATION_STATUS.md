@@ -50,3 +50,8 @@ The reason is environmental: this working container does not provide the Flutter
 ## v1.0.5+6 CI patch
 
 The GitHub Actions workflow now explicitly runs `chmod +x android/gradlew` before executing the wrapper. This is required when the repository files were added/updated through a web upload path that does not preserve the POSIX executable bit.
+
+
+## v42 CI correction
+
+The CI workflow no longer calls `./android/gradlew` in the initial tool-version step. It checks the runner-installed `gradle --version`, generates the Gradle 8.12 wrapper, restores executable permission with `chmod +x android/gradlew`, verifies the wrapper, and then runs `:app:assembleRelease`.

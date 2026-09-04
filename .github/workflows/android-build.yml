@@ -20,7 +20,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -33,50 +32,64 @@ jobs:
         run: |
           flutter --version
           java -version
-          ./android/gradlew --version
+          gradle --version
 
-      - name: Flutter pub get
+      - name: Install dependencies
         run: flutter pub get
 
-      - name: Clean Flutter/Gradle outputs
+      - name: Set up Gradle 8.12
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.12"
+
+      - name: Prepare CI Android properties
         run: |
-          flutter clean
-          rm -rf build
-          rm -rf android/.gradle
+          {
+            echo "flutter.sdk=$FLUTTER_ROOT"
+            echo "sdk.dir=$ANDROID_HOME"
+          } > android/local.properties
 
-      - name: Flutter pub get after clean
-        run: flutter pub get
-
-      - name: Build Android release with Gradle
+      - name: Generate Gradle Wrapper
         working-directory: android
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+        run: gradle wrapper --gradle-version 8.12 --distribution-type bin
+
+      - name: Fix Gradle Wrapper permissions
+        run: chmod +x android/gradlew
+
+      - name: Verify Gradle Wrapper
+        working-directory: android
+        run: ./gradlew --version
+
+      - name: Build release APK with Gradle Wrapper
+        working-directory: android
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace --console=plain
 
       - name: Find generated APK
         run: |
-          echo "Searching for APK files..."
+          echo "Generated APK files:"
           find . -type f -name "*.apk" -print
 
-      - name: Verify APK exists
+      - name: Verify generated APK
         run: |
-          APK="$(find build ../build -type f -name "app-release.apk" 2>/dev/null | head -n 1)"
-          if [ -z "$APK" ]; then
-            echo "ERROR: app-release.apk was not generated."
-            echo "Full build directories:"
-            find . -maxdepth 6 -type d -name "outputs" -o -name "apk" | sort
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: app-release.apk was not generated at the expected AGP output path."
+            echo "All APKs found in workspace:"
+            find . -type f -name "*.apk" -print
             exit 1
           fi
 
-          echo "APK found at: $APK"
+          echo "APK found: $APK"
           ls -lh "$APK"
 
-      - name: Prepare APK
+      - name: Prepare APK artifact
         run: |
           mkdir -p artifacts
-          APK="$(find build ../build -type f -name "app-release.apk" 2>/dev/null | head -n 1)"
-          cp "$APK" "artifacts/yatri-cabs-${{ github.ref_name }}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk \
+            "artifacts/yatri-cabs-${{ github.ref_name }}.apk"
           ls -lh artifacts/
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: yatri-cabs-apk-${{ github.ref_name }}

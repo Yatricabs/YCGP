@@ -1,3 +1,12 @@
+## 1.0.5+6 — CI wrapper permission ordering fix
+
+- Fixed the GitHub Actions ordering so `android/gradlew` is never executed before its executable permission is restored.
+- `gradle --version` is used for the initial Gradle tool check.
+- The workflow then generates/refreshes the Gradle 8.12 wrapper, applies `chmod +x android/gradlew`, verifies `./gradlew --version`, and only then builds the release APK.
+- No Flutter GPS, billing, Foreground Service, PiP, or OEM-resilience code was changed.
+
+---
+
 ## 1.0.5+6 — Standard Gradle Wrapper restoration
 
 - Added `android/gradlew` and `android/gradlew.bat` wrapper entry points.
