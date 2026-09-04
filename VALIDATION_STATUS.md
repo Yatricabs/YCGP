@@ -1,4 +1,4 @@
-# YATRI CABS v1.0.3+4 — Validation Status
+# YATRI CABS v1.0.4+5 — Validation Status
 
 ## Completed in this packaging environment
 
@@ -11,6 +11,8 @@
 - Verified documentation files are present and updated.
 - Verified the output archive with `unzip -t` after packaging.
 - Replaced the CI `flutter build apk --release` step with direct Gradle 8.12 `:app:assembleRelease`, explicit APK discovery, and branch-specific artifact upload.
+- Fixed CI workflow references to a missing `android/gradlew` wrapper script; the project uses the GitHub Actions Gradle 8.12 installation directly.
+- CI generates/verifies the Gradle 8.12 Wrapper and invokes `./gradlew :app:assembleRelease` from `android/`.
 - Updated documentation for the new CI build path.
 
 ## Not executed here
@@ -36,3 +38,11 @@ The reason is environmental: this working container does not provide the Flutter
 9. Simulate GPS signal loss and recovery.
 10. End the ride and verify the foreground service, GPS listener, and notification stop cleanly.
 11. Repeat on representative OEM devices, especially Xiaomi/Redmi/POCO.
+
+## Gradle Wrapper packaging note (v40)
+
+- `android/gradlew` and `android/gradlew.bat` are now present.
+- `gradle-wrapper.properties` remains pinned to Gradle 8.12.
+- CI generates the official Gradle Wrapper JAR with `gradle wrapper --gradle-version 8.12` before invoking `./gradlew`.
+- The official binary wrapper JAR was not fabricated in this packaging environment because no local Gradle distribution was available and external binary retrieval was unavailable.
+- The official Gradle 8.12 wrapper JAR checksum is recorded in `android/gradle/wrapper/gradle-wrapper.jar.sha256` for verification when the JAR is generated on a developer/CI machine.

@@ -258,7 +258,7 @@ Required final validation sequence:
 
 1. `flutter pub get`
 2. `flutter analyze`
-3. `gradle :app:assembleRelease` (or the included GitHub Actions workflow)
+3. `./gradlew :app:assembleRelease` (or the included GitHub Actions workflow)
 4. Install the release APK on representative Xiaomi/Redmi/POCO, OPPO/realme,
    Samsung, OnePlus, vivo, and Lava/Android Go devices.
 5. Execute the active-ride test matrix in this document, including screen-off,

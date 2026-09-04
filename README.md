@@ -376,7 +376,7 @@ start the configured Android workflow.
 ### Gradle release-build path
 The Android Gradle Plugin writes the release APK to
 `android/app/build/outputs/apk/release/app-release.apk`. The GitHub Actions
-workflow now invokes Gradle 8.12 directly and verifies that exact output before
+workflow now uses the Gradle 8.12 Wrapper and verifies that exact output before
 uploading it. No custom Gradle task hook or APK-copy hook is used.
 
 ---
@@ -399,3 +399,7 @@ uploading it. No custom Gradle task hook or APK-copy hook is used.
 - A lightweight OEM guidance dialog explains relevant background settings.
 - Wakelock keeps the display on during active rides; PiP is optional.
 
+
+## CI build path
+
+GitHub Actions installs Gradle 8.12 and invokes `./gradlew :app:assembleRelease` through the Gradle 8.12 Wrapper from `android/`. The CI workflow uses `android/gradlew` after generating the official wrapper JAR in the CI workspace.
