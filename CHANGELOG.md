@@ -1,4 +1,41 @@
+## 1.0.2+3 — Build/OEM hardening
+
+- Removed the custom `assembleRelease` APK-copy Gradle hook to keep the Android build graph on the standard Flutter/AGP path.
+- Kept the native location Foreground Service, notification safety, service health, PiP, task-removal recovery, and existing GPS billing logic unchanged.
+- Added explicit release/test notes documenting what was statically verified and what still requires a real Flutter/Android build and physical-device validation.
+
 # Changelog
+
+Every entry explains **what changed** and **why it matters for YATRI
+CABS specifically** - intercity rides through hills, dense forest, and
+other remote no-network stretches, billed purely from GPS.
+
+---
+
+### v36 - native Android foreground ride service + background resilience
+**What:** Added a custom Android `RideTrackingForegroundService` for genuine
+active-ride location tracking, with a dedicated low-importance ongoing
+notification, Android `location` foreground-service declaration, native GPS
+queueing, service-health state, task-removal handling, Flutter/native
+MethodChannel + EventChannel communication, active-ride PiP/back behavior,
+explicit-close confirmation, OEM background-protection guidance, and initial
+ride persistence at ride start. Existing GPS validation/billing remains in
+Dart; the native service is a platform tracking layer and the previous Dart
+GPS stream remains a fallback only if the native service cannot start.
+
+**Why:** The old plugin-managed foreground service had previously crashed on a
+real Xiaomi/MIUI device with `CannotPostForegroundServiceNotificationException:
+Bad notification for startForeground`. This version owns the notification and
+foreground-service startup path directly so there is no plugin-generated
+foreground notification path to debug indirectly. It also keeps the design
+policy-aligned: real location work, user-visible notification, active-ride
+scope, and a clean stop when the ride ends.
+
+**Documentation:** Updated `README.md`, `GPS_TRACKING_NOTES.md`, and added
+`ANDROID_BACKGROUND_ARCHITECTURE.md` with the architecture, permissions, OEM
+strategy, recovery model, and field-test matrix.
+
+---
 
 Every entry explains **what changed** and **why it matters for YATRI
 CABS specifically** - intercity rides through hills, dense forest, and

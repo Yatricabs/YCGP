@@ -20,7 +20,7 @@ lib/
 android/
   app/src/main/AndroidManifest.xml   - permissions, foreground-service/PiP config
   app/src/main/res/drawable/
-    ic_notification.xml              - icon for the "ride in progress" notification
+    ic_stat_location.xml             - small icon for the active-ride FGS notification
   app/build.gradle.kts               - Gradle build config (SDK versions, signing)
 
 .github/workflows/android-build.yml  - builds a release APK on every push
@@ -144,62 +144,69 @@ this, Android's normal auto-lock would turn the screen off during a long
 drive, which - combined with some OEMs' aggressive power-saving - can
 also affect how reliably location updates keep arriving.
 
-### 2.6 Floating window when switching apps (`floating` package + PiP)
-When a driver leaves the app mid-ride (home button, switches to
-WhatsApp/Phone/etc.), Android's native **Picture-in-Picture** mode
-shrinks the app into a small floating window instead of sending it fully
-to the background - the same behavior Google Maps uses during
-turn-by-turn navigation. `Floating().enable(const OnLeavePiP())` is
-called when the ride starts.
+### 2.6 Picture-in-Picture and active-ride background behavior
+During an active ride, Android PiP can shrink the ride UI into a compact
+floating window while the native location foreground service continues
+independently. `MainActivity.kt` owns PiP behavior; the Flutter `floating`
+package remains only for the PiP widget switcher.
 
-**Limitation:** Android does not deliver touch input to a PiP window, so
-buttons don't work there. `main.dart` therefore renders a **separate,
-simplified view** (`_buildPipView`) while in PiP - just the map and the
-live distance - and the full interactive screen (`_buildFullScreen`)
-otherwise. Ending a ride requires bringing the app back to full screen
-first.
+**Back behavior:** Android/Flutter Back during an active ride requests PiP
+instead of ending or closing the ride. An explicit **Close YATRI CABS** action
+uses a confirmation dialog.
 
-### 2.7 GPS tracking approach (and why the foreground service was removed)
-Earlier versions used a plain Dart `Timer` to poll for a new GPS fix
-every 2 seconds - Android suspends this once the screen locks or a call
-takes over the screen, silently pausing tracking. That was replaced with
-`Geolocator.getPositionStream()`, which is what's still used now, but
-**not** with `foregroundNotificationConfig` (a genuine Android
-foreground service + persistent notification) - that was tried and then
-**removed** after it caused two separate real-device "YATRI CABS keeps
-stopping" crashes on a Xiaomi/MIUI phone, both variations of
-`android.app.RemoteServiceException$CannotPostForegroundServiceNotificationException:
-Bad notification for startForeground`. This exception is thrown by the
-OS directly via a Binder callback into the app's main thread - it is
-**not a normal catchable exception**, so no amount of Dart/Kotlin
-try/catch around the triggering call can prevent the crash. A correctly
-configured custom notification icon and the `POST_NOTIFICATIONS`
-permission were both already in place and the crash still happened.
+**Recents/task removal:** Android does not provide a dependable pre-removal
+confirmation hook for an ordinary app. The native service therefore handles
+`onTaskRemoved()`, records the event, keeps the ongoing ride notification
+visible, vibrates once (best-effort), and continues real location tracking.
 
-Given a driver-billing app being fully unusable is worse than losing
-guaranteed screen-lock survival, GPS now runs as a **plain (non-
-foreground) location stream**. Trade-off: Android is more likely to
-throttle or pause updates after an extended period with the screen
-locked or the app backgrounded, especially on aggressive-battery-
-management OEMs - `_showKeepAppOpenWarning()` tells the driver this
-plainly, and the GPS-stream watchdog (2.10) plus crash-safe persistence
-(2.4) still apply regardless. If reliable foreground-service tracking is
-worth pursuing again later, `GPS_TRACKING_NOTES.md` has notes on a
-safer path (a custom native Android foreground service built and tested
-directly, rather than depending on a third-party plugin's internal,
-apparently OEM-fragile notification-building code).
+### 2.7 Native Android foreground location service
+The active ride now uses a custom `RideTrackingForegroundService` rather than
+the Geolocator plugin's internal foreground-service notification path. The
+service is declared as `foregroundServiceType="location"`, starts only after
+a valid location permission and initial ride fix are available, and owns the
+Android notification/GPS lifecycle.
 
-This still requires **background location permission**
-(`ACCESS_BACKGROUND_LOCATION`), which Android only grants after
-foreground ("while using the app") access has already been approved -
-`_ensureLocationPermission()` requests it as a second step, which is why
-the app shows **two** permission prompts the first time it runs.
+The service uses Android `LocationManager` and keeps a lightweight polling
+policy: about 2 seconds while moving and about 8 seconds while stationary,
+with a cooldown before switching modes. It persists service health and a
+bounded queue of GPS fixes so Flutter can recover fixes collected while its
+listener is detached.
 
-### 2.8 Battery-optimization exemption prompt
-`_requestBatteryOptimizationExemption()` asks Android (via
-`permission_handler`) to exclude the app from battery optimization,
-once, right after location permission is granted. Directly addresses the
-OEM-battery-manager failure mode described in 2.4/2.7 above.
+The previous plugin-managed implementation crashed on a real Xiaomi/MIUI
+device with:
+
+```text
+CannotPostForegroundServiceNotificationException:
+Bad notification for startForeground
+```
+
+The custom implementation controls the notification channel, valid bundled
+small icon, immutable `PendingIntent`, ongoing notification, and Android
+foreground-service type directly. It still does not claim that Android or an
+OEM can never stop an app. Extreme memory pressure, Force Stop, shutdown, or
+OEM-specific restrictions remain outside an ordinary app's control.
+
+### 2.8 Background service health and recovery
+`MainActivity.kt` communicates with the native service through two channels:
+`yatri_cabs/ride_service` and `yatri_cabs/ride_events`. Flutter checks native
+service health about every 30 seconds during an active ride. Health includes
+service-alive state, last GPS timestamp/position, accuracy, speed, status, task
+removal time, and pending native fixes.
+
+If the active ride is still marked active but the native service disappears,
+Flutter attempts a real foreground-service restart. A long GPS gap is treated
+as a signal-loss condition when the service itself is still alive, rather than
+as proof of an app kill.
+
+### 2.8a OEM background-protection guidance
+YATRI detects the device family and shows driver-facing guidance for Xiaomi/
+Redmi/POCO, OPPO, realme, Samsung, OnePlus, vivo, Lava, and generic Android.
+The app does not silently launch undocumented OEM Settings intents. This keeps
+the reliability layer user-visible and avoids reintroducing the Settings-intent
+crash pattern that caused earlier MIUI failures.
+
+A detailed OEM strategy and field-test matrix lives in
+`ANDROID_BACKGROUND_ARCHITECTURE.md`.
 
 ### 2.9 GPS signal-strength indicator
 A small pill in the top-right corner of the map (`GPS: Strong` /
@@ -312,11 +319,15 @@ resetting.
 
 | Permission | Why |
 |---|---|
-| `ACCESS_FINE_LOCATION` / `ACCESS_COARSE_LOCATION` | Basic GPS access |
-| `ACCESS_BACKGROUND_LOCATION` | Keep tracking while the app isn't in the foreground (screen locked, another app open) - see 2.7 |
-| `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_LOCATION` | Required by Android to run the location-tracking foreground service (the second is specifically required on Android 14+/API 34) |
-| `WAKE_LOCK` | Used internally by the foreground-service location tracking and `wakelock_plus` |
-| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Lets the app prompt the OS-level battery-optimization exemption dialog - see 2.8 |
+| `ACCESS_FINE_LOCATION` / `ACCESS_COARSE_LOCATION` | GPS access for the active ride |
+| `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_LOCATION` | Required for the native Android location foreground service |
+| `POST_NOTIFICATIONS` | Driver-visible active-ride foreground-service notification on supported Android versions |
+| `VIBRATE` | One short best-effort vibration when Android removes the app task during an active ride |
+| `WAKE_LOCK` | Supports the existing screen-on behavior provided by `wakelock_plus` |
+
+`ACCESS_BACKGROUND_LOCATION` is **not** automatically requested by this
+version. The location foreground service is started from the visible ride
+Activity after location permission has been granted.
 
 **Security note:** `AndroidManifest.xml` also contains the Google Maps
 API key. Restrict it in Google Cloud Console (Android app restriction:
@@ -370,13 +381,19 @@ look for above).
 
 ## 6. Current app behavior summary
 
-- `Estimated Km` is hard-coded to 291 km (a pre-trip business estimate).
-- `Distance Covered` starts at whatever was last saved (0.0 km for a
-  fresh ride, or a recovered value after a crash/restart - see 2.4).
-- GPS is sampled roughly every 2 seconds under normal signal; during a
-  signal gap, the next fix is validated by implied average speed instead
-  of assuming the gap didn't happen (see 2.3).
-- Screen stays on and the foreground-service notification is visible for
-  the full duration of an active ride.
-- Leaving the app mid-ride shrinks it into a floating PiP window instead
-  of fully backgrounding it (Android only).
+- `Estimated Km` remains hard-coded at 291 km.
+- `Distance Covered` remains GPS-driven and crash-recoverable.
+- Existing GPS validation, mock-location rejection, signal-gap handling,
+  elevation-aware distance, adaptive polling, and anomaly logging remain the
+  billing source of truth.
+- An active ride starts a genuine native Android location foreground service
+  with a persistent notification.
+- Flutter receives native GPS fixes through the EventChannel and feeds them
+  into the established Dart validator/billing path.
+- Native service health is checked every 30 seconds while a ride is active.
+- Back during an active ride goes to PiP; explicit Close uses confirmation.
+- Recents task removal is handled by native `onTaskRemoved()` and the service
+  continues the active ride where Android permits it.
+- A lightweight OEM guidance dialog explains relevant background settings.
+- Wakelock keeps the display on during active rides; PiP is optional.
+

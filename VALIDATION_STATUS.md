@@ -1,0 +1,36 @@
+# YATRI CABS v1.0.2+3 — Validation Status
+
+## Completed in this packaging environment
+
+- Source tree unpacked and inspected from the v36 baseline.
+- Removed the custom `afterEvaluate { tasks.named("assembleRelease") ... }` APK-copy hook.
+- Verified the Gradle wrapper configuration points to Gradle 8.12.
+- Verified Android manifest declares a `location` Foreground Service and the required foreground-service/location permissions.
+- Verified the native service notification uses a bundled drawable small icon and an immutable `PendingIntent`.
+- Verified active-ride service/task-removal/PiP communication code is present.
+- Verified documentation files are present and updated.
+- Verified the output archive with `unzip -t` after packaging.
+
+## Not executed here
+
+- Flutter package resolution (`flutter pub get`).
+- Dart static analysis (`flutter analyze`).
+- Release APK compilation (`flutter build apk --release`).
+- Installation on a physical Android phone.
+- Xiaomi/Redmi/POCO, OPPO/realme, Samsung, OnePlus, vivo, Lava, or Android Go OEM behavior tests.
+
+The reason is environmental: this working container does not provide the Flutter SDK, Android SDK/ADB, emulator, or connected physical device. No claim is made that these tests passed.
+
+## Required release-gate tests
+
+1. Build release APK with the repository's Flutter/Android toolchain.
+2. Install the release APK.
+3. Start an active ride while the app is visible.
+4. Confirm the ongoing YATRI active-ride notification appears.
+5. Lock the screen and verify real GPS distance continues.
+6. Enter PiP and verify the service continues.
+7. Use Back during the ride and verify PiP rather than ride closure.
+8. Remove the task from Recents and verify the service/notification behavior.
+9. Simulate GPS signal loss and recovery.
+10. End the ride and verify the foreground service, GPS listener, and notification stop cleanly.
+11. Repeat on representative OEM devices, especially Xiaomi/Redmi/POCO.
