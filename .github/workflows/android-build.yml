@@ -2,7 +2,9 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+      - dev
   workflow_dispatch: {}
 
 jobs:
@@ -35,6 +37,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: yatri-cabs-release-apk
+          name: yatri-cabs-release-apk-${{ github.ref_name }}
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
