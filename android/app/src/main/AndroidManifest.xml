@@ -2,11 +2,19 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!--
+      FOREGROUND_SERVICE, FOREGROUND_SERVICE_LOCATION, and WAKE_LOCK used
+      to be here for the geolocator plugin's foreground-service tracking
+      notification. That specific feature was removed after it caused two
+      "YATRI CABS keeps stopping" crashes on a real Xiaomi/MIUI device
+      (CannotPostForegroundServiceNotificationException - see
+      lib/main.dart's _subscribeToPositionStream and CHANGELOG.md). GPS
+      now runs as a plain (non-foreground) location stream, so these
+      permissions are no longer requested - keeping unused permissions
+      around only adds surface area for a Play Store review flag with no
+      benefit.
+    -->
 
     <application
         android:name="${applicationName}"

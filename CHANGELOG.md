@@ -6,27 +6,35 @@ other remote no-network stretches, billed purely from GPS.
 
 ---
 
-### Fixed a crash on ride start: `CannotPostForegroundServiceNotificationException`
-**What:** Added the `POST_NOTIFICATIONS` permission to the manifest,
-and now request it (via `permission_handler`) right after location
-permission is granted, before the ride's GPS tracking - which runs as
-an Android foreground service with a persistent notification - starts.
-**Why:** The v32 crash report showed `android.app.RemoteService
-Exception$CannotPostForegroundServiceNotificationException: Bad
-notification for startForeground`, thrown from `geolocator`'s internal
-location foreground service. This is unrelated to the earlier
-battery-optimization changes. It's a known issue with the `geolocator`
-plugin on newer Android versions (reported on Android 15/API 35):
-without `POST_NOTIFICATIONS` granted first, starting the foreground
-service's notification can crash the whole app instead of just
-silently failing to show it. Requesting the permission up front, before
-the service starts, avoids that race. This does not guarantee the
-underlying plugin bug can never resurface (it's inside `geolocator`'s
-own native code, not our code) - if it still crashes after this,
-the next step is to test the ride flow on the same phone/Android
-version to reproduce and check for a newer `geolocator` release.
-
----
+### Third real-device crash, root cause found: removed the foreground-service notification entirely
+**What:** Removed `foregroundNotificationConfig` from
+`AndroidSettings` in `_subscribeToPositionStream` - GPS now runs as a
+plain (non-foreground) `Geolocator.getPositionStream()` with no
+persistent notification. Also removed the now-unused
+`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_LOCATION`, and `WAKE_LOCK`
+manifest permissions, and the now-unused `ic_notification.xml`
+drawable. Updated `_showKeepAppOpenWarning()`'s wording to honestly
+reflect the new trade-off.
+**Why:** The exact crash from the two previous entries below
+("YATRI CABS keeps stopping") kept recurring even after removing both
+suspected causes (the `disable_battery_optimization` plugin, then a
+leftover native `MainActivity` intent). A real device's crash report
+finally captured the actual exception:
+`android.app.RemoteServiceException$CannotPostForegroundServiceNotificationException:
+Bad notification for startForeground`. This is thrown by the OS
+directly into the app's main thread via a Binder callback - it is **not
+a normal catchable exception**, which is exactly why wrapping the
+triggering call in try/catch (done in an earlier fix) never stopped the
+crash. The notification icon and required `POST_NOTIFICATIONS`
+permission were both already correctly in place per the plugin's
+documented usage, and it still crashed - pointing to a deeper,
+OEM-specific fragility in the plugin's own foreground-service/
+notification-building code on this device, not a straightforward
+misconfiguration on the app's side. Given a driver-billing app being
+completely unusable is a worse outcome than losing guaranteed
+screen-lock survival, the foreground service was removed rather than
+debugged further inside third-party plugin internals. See
+`GPS_TRACKING_NOTES.md` for the safer path if this is revisited.
 
 ### Battery-optimization handling simplified back to the standard-only flow
 **What:** Removed the entire guidance/verification/banner layer around

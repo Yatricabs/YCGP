@@ -29,6 +29,20 @@ specific conditions - not under ideal flat-open-urban GPS conditions.
 
 *(Newest entries at the top. One line each: what, and the one-line why.)*
 
+- **Root cause of "keeps stopping" crash finally confirmed + foreground
+  service removed entirely** - a real device's crash report captured
+  the actual exception:
+  `CannotPostForegroundServiceNotificationException: Bad notification
+  for startForeground`, thrown by the OS directly (not a normal
+  catchable exception - explains why prior try/catch guards never
+  helped). Icon config and `POST_NOTIFICATIONS` were already correct
+  per plugin docs; crash persisted anyway, pointing to OEM-specific
+  fragility inside the plugin's own foreground-service code on this
+  device. GPS now runs as a plain (non-foreground) stream with no
+  persistent notification - trades away guaranteed screen-lock/
+  background survival for basic app stability, which matters more for
+  a driver-billing app. See section 3 below for a safer path if
+  foreground-service tracking is worth pursuing again later.
 - **Battery-optimization handling simplified back to standard-only** -
   removed the manual-guide dialog, persistent reminder banner, and
   periodic/on-resume re-verification (and the `WidgetsBindingObserver`
@@ -103,6 +117,20 @@ specific conditions - not under ideal flat-open-urban GPS conditions.
 raised once doesn't get lost. Move an item up to section 2 once it's
 actually implemented.)*
 
+- **Reliable foreground-service GPS tracking - approach differently if
+  revisited.** The `geolocator` plugin's built-in
+  `foregroundNotificationConfig` was tried and removed after causing a
+  confirmed OS-level crash
+  (`CannotPostForegroundServiceNotificationException`) on a real
+  Xiaomi/MIUI device, even with a correctly configured icon and
+  permission. GPS currently runs as a plain (non-foreground) stream,
+  which means Android can throttle updates on a long screen-locked/
+  backgrounded stretch. If full screen-lock survival is worth pursuing
+  again: build and test a **custom native Android foreground service**
+  directly (full control over notification construction, testable in
+  isolation) rather than depending on a third-party plugin's internal
+  notification code - and test extensively on real MIUI/ColorOS/
+  FuntouchOS devices before shipping, not just an emulator.
 - **OEM-specific battery/auto-start guidance - deliberately removed,
   approach with caution if revisited.** Two real-device crashes on the
   same Xiaomi/MIUI phone were both traced to this feature area (a native

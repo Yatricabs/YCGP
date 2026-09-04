@@ -327,21 +327,23 @@ class _RideScreenState extends State<RideScreen> {
     }
   }
 
-  /// Educates the driver on the one thing no amount of code can fully
-  /// guarantee against: some OEMs still kill a foreground service if the
-  /// app is force-swiped away from the recent-apps list. This is shown
-  /// once per fresh ride start.
+  /// Now that GPS runs as a plain (non-foreground) stream rather than a
+  /// persistent-notification foreground service (see
+  /// _subscribeToPositionStream for why), Android is more likely to
+  /// throttle location updates on a long screen-locked/backgrounded
+  /// stretch. This tells the driver plainly, once per fresh ride start.
   void _showKeepAppOpenWarning() {
     if (!mounted) return;
     showDialog<void>(
       context: context,
       builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('Keep the app running'),
+        title: const Text('Keep YATRI CABS open during the ride'),
         content: const Text(
-          'Live GPS tracking will keep working while you use other apps '
-          'or lock the screen. Just avoid force-closing YATRI CABS from '
-          'the recent-apps list during the ride - that can stop tracking '
-          'on some phones.',
+          'For the most reliable tracking, keep YATRI CABS open on screen '
+          'for the ride. Using other apps briefly is fine, but avoid '
+          'locking the screen or switching away for long stretches, and '
+          'never force-close the app from the recent-apps list mid-ride - '
+          'any of these can pause tracking on some phones.',
         ),
         actions: <Widget>[
           TextButton(
@@ -385,39 +387,8 @@ class _RideScreenState extends State<RideScreen> {
       permission = await Geolocator.requestPermission();
     }
 
-    final bool locationOk = permission == LocationPermission.whileInUse ||
+    return permission == LocationPermission.whileInUse ||
         permission == LocationPermission.always;
-    if (!locationOk) return false;
-
-    // GPS tracking runs as an Android foreground service with a
-    // persistent notification (see _subscribeToPositionStream). On
-    // Android 13+ that notification needs POST_NOTIFICATIONS, and on
-    // Android 15 specifically, starting the foreground service *before*
-    // this is granted has been seen to crash the whole app with
-    // "CannotPostForegroundServiceNotificationException: Bad
-    // notification for startForeground" instead of just failing to show
-    // the notification. Request it here, before the ride (and its
-    // foreground service) starts, so the service never races ahead of
-    // the permission.
-    await _ensureNotificationPermission();
-
-    return true;
-  }
-
-  /// See the call site in [_ensureLocationPermission] for why this runs
-  /// before the ride's foreground-service GPS tracking starts. Not
-  /// fatal if denied - the ride still starts - but the persistent
-  /// tracking notification may not show, and on some Android versions
-  /// the crash this guards against could resurface.
-  Future<void> _ensureNotificationPermission() async {
-    try {
-      final ph.PermissionStatus status = await ph.Permission.notification.status;
-      if (!status.isGranted) {
-        await ph.Permission.notification.request();
-      }
-    } catch (error) {
-      debugPrint('Notification permission request failed: $error');
-    }
   }
 
   void _startRideTracking(Position startingPosition, {RideProgress? resumeFrom}) {
@@ -547,10 +518,38 @@ class _RideScreenState extends State<RideScreen> {
     }
   }
 
-  /// Runs GPS tracking as an Android foreground service (persistent
-  /// notification while the ride is active) so it keeps updating even
-  /// after the screen locks or an incoming call takes over the screen -
-  /// a plain Dart Timer would get suspended by Android in that case.
+  /// Runs GPS tracking as a plain (non-foreground) location stream.
+  ///
+  /// HISTORY, for whoever touches this next: this used to configure
+  /// `foregroundNotificationConfig` so the plugin would run as a genuine
+  /// Android foreground service with a persistent notification, which is
+  /// the *correct* way to survive screen lock / an incoming call
+  /// long-term. It was removed after this exact feature caused two
+  /// real-device crashes on a Xiaomi/MIUI phone
+  /// (`android.app.RemoteServiceException$CannotPostForegroundServiceNotificationException:
+  /// Bad notification for startForeground`). That specific exception is
+  /// thrown by the OS directly into the app's main thread via a Binder
+  /// callback (`ActivityThread.throwRemoteServiceException`) - it is
+  /// NOT a normal catchable exception, so no amount of Dart or Kotlin
+  /// try/catch around the call that triggers it can prevent the crash.
+  /// A correctly-configured custom drawable icon and the standard
+  /// `POST_NOTIFICATIONS` permission were both already in place and the
+  /// crash still happened, so the safest fix - given a driver-billing
+  /// app being fully unusable is worse than losing guaranteed
+  /// screen-lock survival - was to stop asking the plugin to start a
+  /// foreground service at all.
+  ///
+  /// Trade-off this accepts: without a foreground service, Android is
+  /// more likely to throttle or pause location updates after an extended
+  /// period with the screen locked or the app backgrounded, especially
+  /// on aggressive-battery-management OEMs. The GPS-stream watchdog
+  /// (`_checkPositionStreamHealth`) and crash-safe persistence (2.4 in
+  /// README) still apply regardless. If reliable foreground-service
+  /// tracking is worth pursuing again later, the safer path is a custom
+  /// native Android foreground service built and tested directly (full
+  /// control over the notification) rather than depending on a
+  /// third-party plugin's internal, apparently OEM-fragile
+  /// notification-building code - see GPS_TRACKING_NOTES.md.
   ///
   /// [slowPoll] trades fix frequency for battery life: while the vehicle
   /// is genuinely stationary (a long stop/break), there is nothing new to
@@ -563,16 +562,6 @@ class _RideScreenState extends State<RideScreen> {
     final LocationSettings locationSettings = AndroidSettings(
       accuracy: LocationAccuracy.high,
       intervalDuration: Duration(seconds: slowPoll ? 8 : 2),
-      foregroundNotificationConfig: const ForegroundNotificationConfig(
-        notificationTitle: 'YATRI CABS - Ride in progress',
-        notificationText: 'Tracking your live location for accurate billing',
-        notificationIcon: AndroidResource(
-          name: 'ic_notification',
-          defType: 'drawable',
-        ),
-        enableWakeLock: true,
-        setOngoing: true,
-      ),
     );
 
     _positionSubscription = Geolocator.getPositionStream(

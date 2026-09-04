@@ -159,18 +159,37 @@ live distance - and the full interactive screen (`_buildFullScreen`)
 otherwise. Ending a ride requires bringing the app back to full screen
 first.
 
-### 2.7 GPS continues after screen lock / phone calls (foreground service)
+### 2.7 GPS tracking approach (and why the foreground service was removed)
 Earlier versions used a plain Dart `Timer` to poll for a new GPS fix
 every 2 seconds - Android suspends this once the screen locks or a call
-takes over the screen, silently pausing tracking. This was replaced with
-`Geolocator.getPositionStream()` configured via `AndroidSettings(...,
-foregroundNotificationConfig: ...)`, which runs as a genuine **Android
-foreground service** with a persistent notification
-("YATRI CABS - Ride in progress"). Android does not suspend foreground
-services the way it does a backgrounded Timer, so GPS keeps updating
-through screen lock and incoming calls.
+takes over the screen, silently pausing tracking. That was replaced with
+`Geolocator.getPositionStream()`, which is what's still used now, but
+**not** with `foregroundNotificationConfig` (a genuine Android
+foreground service + persistent notification) - that was tried and then
+**removed** after it caused two separate real-device "YATRI CABS keeps
+stopping" crashes on a Xiaomi/MIUI phone, both variations of
+`android.app.RemoteServiceException$CannotPostForegroundServiceNotificationException:
+Bad notification for startForeground`. This exception is thrown by the
+OS directly via a Binder callback into the app's main thread - it is
+**not a normal catchable exception**, so no amount of Dart/Kotlin
+try/catch around the triggering call can prevent the crash. A correctly
+configured custom notification icon and the `POST_NOTIFICATIONS`
+permission were both already in place and the crash still happened.
 
-This requires **background location permission**
+Given a driver-billing app being fully unusable is worse than losing
+guaranteed screen-lock survival, GPS now runs as a **plain (non-
+foreground) location stream**. Trade-off: Android is more likely to
+throttle or pause updates after an extended period with the screen
+locked or the app backgrounded, especially on aggressive-battery-
+management OEMs - `_showKeepAppOpenWarning()` tells the driver this
+plainly, and the GPS-stream watchdog (2.10) plus crash-safe persistence
+(2.4) still apply regardless. If reliable foreground-service tracking is
+worth pursuing again later, `GPS_TRACKING_NOTES.md` has notes on a
+safer path (a custom native Android foreground service built and tested
+directly, rather than depending on a third-party plugin's internal,
+apparently OEM-fragile notification-building code).
+
+This still requires **background location permission**
 (`ACCESS_BACKGROUND_LOCATION`), which Android only grants after
 foreground ("while using the app") access has already been approved -
 `_ensureLocationPermission()` requests it as a second step, which is why
