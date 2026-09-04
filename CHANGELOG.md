@@ -6,6 +6,23 @@ other remote no-network stretches, billed purely from GPS.
 
 ---
 
+### Missing app launcher icon added
+**What:** Added a proper `mipmap/ic_launcher.png` icon at all five
+standard Android density buckets (mdpi through xxxhdpi) and set
+`android:icon="@mipmap/ic_launcher"` on the `<application>` tag. Also
+removed the now-fully-unused `ic_notification.xml` drawable left over
+from the removed foreground-service notification (previous entry).
+**Why:** This hand-assembled project (built outside `flutter create`)
+never had a launcher icon at all - no mipmap resources existed anywhere,
+and the manifest didn't reference one. While investigating the
+`CannotPostForegroundServiceNotificationException` crash, this was
+flagged as a real gap regardless of whether it was the actual cause: any
+Android code path that falls back to the app's standard launcher icon
+(the OS itself for the home-screen icon, or any plugin's internal
+default notification icon) had nothing valid to resolve. Fixing this is
+correct Android practice on its own merits, independent of whichever
+exact cause is ultimately confirmed for the notification crash.
+
 ### Third real-device crash, root cause found: removed the foreground-service notification entirely
 **What:** Removed `foregroundNotificationConfig` from
 `AndroidSettings` in `_subscribeToPositionStream` - GPS now runs as a

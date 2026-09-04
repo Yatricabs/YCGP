@@ -29,6 +29,12 @@ specific conditions - not under ideal flat-open-urban GPS conditions.
 
 *(Newest entries at the top. One line each: what, and the one-line why.)*
 
+- **Missing app launcher icon added** - project never had `mipmap/
+  ic_launcher` resources or an `android:icon` reference at all (built
+  outside `flutter create`); added proper icons at all density buckets.
+  Correct Android practice regardless of whether this was implicated in
+  the notification crash - any code path defaulting to the standard
+  launcher icon had nothing valid to resolve before this.
 - **Root cause of "keeps stopping" crash finally confirmed + foreground
   service removed entirely** - a real device's crash report captured
   the actual exception:

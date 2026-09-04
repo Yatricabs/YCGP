@@ -19,6 +19,7 @@
     <application
         android:name="${applicationName}"
         android:label="YATRI CABS"
+        android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:supportsRtl="true">
 
