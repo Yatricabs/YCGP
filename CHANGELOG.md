@@ -1,4 +1,85 @@
+## 1.0.5+6 — CI wrapper permission ordering fix
+
+- Fixed the GitHub Actions ordering so `android/gradlew` is never executed before its executable permission is restored.
+- `gradle --version` is used for the initial Gradle tool check.
+- The workflow then generates/refreshes the Gradle 8.14 wrapper, applies `chmod +x android/gradlew`, verifies `./gradlew --version`, and only then builds the release APK.
+- No Flutter GPS, billing, Foreground Service, PiP, or OEM-resilience code was changed.
+
+---
+
+## 1.0.5+6 — Standard Gradle Wrapper restoration
+
+- Added `android/gradlew` and `android/gradlew.bat` wrapper entry points.
+- CI now generates the official Gradle 8.14 Wrapper JAR, verifies the wrapper, and builds with `./gradlew :app:assembleRelease`.
+- Added the official Gradle 8.14 wrapper-JAR checksum reference.
+- Kept GPS/FGS, billing, PiP, persistence, and UI behavior unchanged.
+
+## 1.0.5+6 — CI wrapper-path fix
+
+- Removed all GitHub Actions references to `./android/gradlew` because this repository intentionally uses the GitHub-hosted Gradle 8.14 installation and does not contain the Gradle wrapper script.
+- CI now verifies the installed Gradle executable with `gradle --version`.
+- CI builds with `gradle :app:assembleRelease --no-daemon --stacktrace --console=plain` from the Android project directory.
+- Kept the APK verification and branch-specific artifact upload.
+- Kept GPS/FGS, billing, PiP, persistence, and OEM-resilience code unchanged.
+
+## 1.0.3+4 — CI release-build hardening
+
+- Updated GitHub Actions to build the Android release with Gradle 8.14
+  directly instead of relying on `flutter build apk --release` to discover
+  the generated APK.
+- Added explicit CI creation of `android/local.properties` with the Flutter
+  and Android SDK paths.
+- Added explicit APK discovery/verification at
+  `android/app/build/outputs/apk/release/app-release.apk`.
+- Enabled `dev` and `main` branch automatic builds and branch-specific artifact
+  names.
+- Kept the Android GPS/FGS, billing, PiP, persistence, and OEM-resilience code
+  unchanged.
+
+## 1.0.2+3 — Build/OEM hardening
+
+- Removed the custom `assembleRelease` APK-copy Gradle hook to keep the Android build graph on the standard Flutter/AGP path.
+- Kept the native location Foreground Service, notification safety, service health, PiP, task-removal recovery, and existing GPS billing logic unchanged.
+- Added explicit release/test notes documenting what was statically verified and what still requires a real Flutter/Android build and physical-device validation.
+
+## 1.0.5+6 — GitHub Actions executable-bit fix
+
+- Added an explicit `chmod +x android/gradlew` step before invoking the Gradle Wrapper.
+- This protects CI from GitHub web-upload paths that may commit the wrapper script without the POSIX executable bit.
+- Kept the standard Gradle Wrapper build path and all GPS/FGS/billing/PiP code unchanged.
+
 # Changelog
+
+Every entry explains **what changed** and **why it matters for YATRI
+CABS specifically** - intercity rides through hills, dense forest, and
+other remote no-network stretches, billed purely from GPS.
+
+---
+
+### v36 - native Android foreground ride service + background resilience
+**What:** Added a custom Android `RideTrackingForegroundService` for genuine
+active-ride location tracking, with a dedicated low-importance ongoing
+notification, Android `location` foreground-service declaration, native GPS
+queueing, service-health state, task-removal handling, Flutter/native
+MethodChannel + EventChannel communication, active-ride PiP/back behavior,
+explicit-close confirmation, OEM background-protection guidance, and initial
+ride persistence at ride start. Existing GPS validation/billing remains in
+Dart; the native service is a platform tracking layer and the previous Dart
+GPS stream remains a fallback only if the native service cannot start.
+
+**Why:** The old plugin-managed foreground service had previously crashed on a
+real Xiaomi/MIUI device with `CannotPostForegroundServiceNotificationException:
+Bad notification for startForeground`. This version owns the notification and
+foreground-service startup path directly so there is no plugin-generated
+foreground notification path to debug indirectly. It also keeps the design
+policy-aligned: real location work, user-visible notification, active-ride
+scope, and a clean stop when the ride ends.
+
+**Documentation:** Updated `README.md`, `GPS_TRACKING_NOTES.md`, and added
+`ANDROID_BACKGROUND_ARCHITECTURE.md` with the architecture, permissions, OEM
+strategy, recovery model, and field-test matrix.
+
+---
 
 Every entry explains **what changed** and **why it matters for YATRI
 CABS specifically** - intercity rides through hills, dense forest, and

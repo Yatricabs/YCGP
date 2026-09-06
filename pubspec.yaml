@@ -1,7 +1,7 @@
 name: yatri_cabs_gps_billing
 description: YATRI CABS GPS live distance billing screen.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.5+6
 
 environment:
   sdk: '>=3.4.0 <4.0.0'

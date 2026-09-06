@@ -1,14 +1,14 @@
 import 'dart:async';
-import 'dart:typed_data';
+import 'dart:convert';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:floating/floating.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geolocator_android/geolocator_android.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:flutter/services.dart';
 
 import 'event_logger.dart';
 import 'gps_validator.dart';
@@ -72,7 +72,12 @@ class _RideScreenState extends State<RideScreen> {
   DateTime? _lastPollModeSwitchAt;
   bool _highDistanceWarningLogged = false;
   Timer? _watchdogTimer;
-  final Floating _floating = Floating();
+  static const MethodChannel _nativeRideChannel = MethodChannel('yatri_cabs/ride_service');
+  static const EventChannel _nativeRideEvents = EventChannel('yatri_cabs/ride_events');
+  StreamSubscription<dynamic>? _nativeEventSubscription;
+  bool _nativeServiceActive = false;
+  DateTime? _lastNativeNotificationUpdate;
+  Timer? _nativeHealthTimer;
   final GpsFixValidator _validator = GpsFixValidator();
   final RidePersistence _persistence = RidePersistence();
   final EventLogger _eventLogger = EventLogger();
@@ -142,6 +147,7 @@ class _RideScreenState extends State<RideScreen> {
   void initState() {
     super.initState();
     _generateCarIcon();
+    _listenToNativeRideService();
     _initializeRide();
   }
 
@@ -234,6 +240,7 @@ class _RideScreenState extends State<RideScreen> {
   }
 
   Future<void> _initializeRide() async {
+    await _ensureNotificationPermission();
     final bool permissionOk = await _ensureLocationPermission();
 
     if (!permissionOk) {
@@ -256,8 +263,6 @@ class _RideScreenState extends State<RideScreen> {
     // background location tracking to save battery - exactly when it
     // matters most, on long low-signal rural stretches where the radio
     // works harder. Ask once to be exempted.
-    await _requestBatteryOptimizationExemption();
-
     // If the app was killed mid-ride last time (crash, OS kill, dead
     // battery), recover the distance/route collected so far instead of
     // silently restarting the bill from zero.
@@ -291,68 +296,14 @@ class _RideScreenState extends State<RideScreen> {
     }
   }
 
-  /// Asks Android's standard battery-optimization exemption once, right
-  /// after location permission is granted. This is intentionally the
-  /// ONLY thing this does now.
-  ///
-  /// HISTORY, for whoever touches this next: this used to also (1) call
-  /// the disable_battery_optimization plugin's native OEM-specific
-  /// dialogs, which crashed the app on a real Xiaomi/MIUI device; then,
-  /// after removing that, (2) show a manual-instructions dialog plus a
-  /// persistent in-app banner that re-verified the exemption on a timer
-  /// and on every app-resume via a WidgetsBindingObserver. That flow was
-  /// *also* implicated in a second "YATRI CABS keeps stopping" crash on
-  /// the same device (traced to a separate leftover native onCreate()
-  /// intent-launch, not this Dart code directly - but the whole feature
-  /// area had become the recurring suspect).
-  ///
-  /// Given two crashes traced back to this general area, the guidance/
-  /// verification/banner layer was removed entirely rather than patched
-  /// a third time. This now does only what the standard Android API
-  /// supports directly and reliably: request the exemption, once,
-  /// silently, and move on - whatever the OEM allows through that
-  /// standard call is what the app gets. No custom OEM-specific
-  /// auto-start guidance, no persistent reminder banner, no repeated
-  /// verification. Less thorough, but this exact feature is not worth
-  /// re-risking an app crash over again.
-  Future<void> _requestBatteryOptimizationExemption() async {
+  Future<void> _ensureNotificationPermission() async {
     try {
-      final ph.PermissionStatus status =
-          await ph.Permission.ignoreBatteryOptimizations.status;
-      if (!status.isGranted) {
-        await ph.Permission.ignoreBatteryOptimizations.request();
+      if (await ph.Permission.notification.isDenied) {
+        await ph.Permission.notification.request();
       }
     } catch (error) {
-      debugPrint('Battery optimization exemption request failed: $error');
+      debugPrint('Notification permission request failed: $error');
     }
-  }
-
-  /// Now that GPS runs as a plain (non-foreground) stream rather than a
-  /// persistent-notification foreground service (see
-  /// _subscribeToPositionStream for why), Android is more likely to
-  /// throttle location updates on a long screen-locked/backgrounded
-  /// stretch. This tells the driver plainly, once per fresh ride start.
-  void _showKeepAppOpenWarning() {
-    if (!mounted) return;
-    showDialog<void>(
-      context: context,
-      builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('Keep YATRI CABS open during the ride'),
-        content: const Text(
-          'For the most reliable tracking, keep YATRI CABS open on screen '
-          'for the ride. Using other apps briefly is fine, but avoid '
-          'locking the screen or switching away for long stretches, and '
-          'never force-close the app from the recent-apps list mid-ride - '
-          'any of these can pause tracking on some phones.',
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Got it'),
-          ),
-        ],
-      ),
-    );
   }
 
   Future<bool> _ensureLocationPermission() async {
@@ -378,28 +329,18 @@ class _RideScreenState extends State<RideScreen> {
       return false;
     }
 
-    // Foreground ("while in use") permission alone is NOT enough to keep
-    // GPS running once the screen locks or a phone call takes over the
-    // screen - Android suspends it. A second prompt asking for "Allow all
-    // the time" (background) is required; Android only shows this after
-    // foreground access has already been granted.
-    if (permission == LocationPermission.whileInUse) {
-      permission = await Geolocator.requestPermission();
-    }
-
+    // The native location foreground service is started from the visible
+    // ride screen, so we intentionally request only the minimum location
+    // scope needed for the active ride. ACCESS_BACKGROUND_LOCATION is not
+    // forced here.
     return permission == LocationPermission.whileInUse ||
         permission == LocationPermission.always;
   }
 
-  void _startRideTracking(Position startingPosition, {RideProgress? resumeFrom}) {
+  Future<void> _startRideTracking(Position startingPosition, {RideProgress? resumeFrom}) async {
     _positionSubscription?.cancel();
 
     if (resumeFrom != null) {
-      // Recovering from a crash/OS-kill/dead-battery mid-ride: keep the
-      // billed distance and route collected so far instead of zeroing
-      // them out. There will be a small gap in the route for the time
-      // the app was down - this is the "considerable but acceptable"
-      // difference, not a full loss of billed distance.
       _totalDistanceMeters = resumeFrom.totalDistanceMeters;
       _previousLat = resumeFrom.previousLat;
       _previousLng = resumeFrom.previousLng;
@@ -409,22 +350,12 @@ class _RideScreenState extends State<RideScreen> {
       _routePoints
         ..clear()
         ..addAll(resumeFrom.routePoints);
-      debugPrint(
-        'Resumed ride after restart: '
-        '${distanceCoveredKm.toStringAsFixed(3)}km already recorded',
-      );
-      unawaited(
-        _eventLogger.log(
-          EventSeverity.warning,
-          'RIDE_RESUMED_AFTER_RESTART',
-          'App restarted mid-ride (crash/OS kill/dead battery) - resumed '
-              'from ${distanceCoveredKm.toStringAsFixed(3)}km instead of '
-              'starting over.',
-          context: <String, dynamic>{
-            'recoveredDistanceMeters': _totalDistanceMeters,
-          },
-        ),
-      );
+      unawaited(_eventLogger.log(
+        EventSeverity.warning,
+        'RIDE_RESUMED_AFTER_RESTART',
+        'App restarted mid-ride and resumed from persisted progress.',
+        context: <String, dynamic>{'recoveredDistanceMeters': _totalDistanceMeters},
+      ));
     } else {
       _totalDistanceMeters = 0.0;
       _previousLat = startingPosition.latitude;
@@ -436,6 +367,18 @@ class _RideScreenState extends State<RideScreen> {
       _routePoints
         ..clear()
         ..add(LatLng(startingPosition.latitude, startingPosition.longitude));
+      // Mark the ride recoverable immediately, before the first accepted
+      // movement segment arrives. A process death in these first seconds
+      // must not turn an active ride into an unrecoverable one.
+      unawaited(_persistence.saveProgress(
+        totalDistanceMeters: 0.0,
+        previousLat: startingPosition.latitude,
+        previousLng: startingPosition.longitude,
+        previousAltitude: startingPosition.altitude,
+        previousFixTime: startingPosition.timestamp,
+        rideStartTime: startingPosition.timestamp,
+        routePoints: _routePoints,
+      ));
     }
 
     _rideActive = true;
@@ -444,55 +387,186 @@ class _RideScreenState extends State<RideScreen> {
     _lastPollModeSwitchAt = null;
     _highDistanceWarningLogged = false;
 
-    // Keep the screen from turning off for the entire ride, and let the
-    // app shrink into a small floating window (like Google Maps
-    // navigation) instead of going fully into the background whenever the
-    // driver switches to another app while a ride is active. Both are
-    // wrapped defensively - PiP support in particular is inconsistent
-    // across OEM Android skins, and neither feature is critical enough
-    // to be worth risking an app crash over if the native side misbehaves.
     try {
       WakelockPlus.enable();
     } catch (error) {
       debugPrint('Wakelock enable failed: $error');
     }
-    try {
-      _floating.enable(const OnLeavePiP());
-    } catch (error) {
-      debugPrint('PiP enable failed: $error');
-      unawaited(
-        _eventLogger.log(
-          EventSeverity.warning,
-          'PIP_ENABLE_FAILED',
-          'Could not enable Picture-in-Picture on leave: $error',
-        ),
-      );
-    }
 
     if (mounted) setState(() {});
 
-    if (resumeFrom == null) {
-      WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _showKeepAppOpenWarning(),
-      );
+    final bool nativeStarted = await _startNativeForegroundService();
+    if (!nativeStarted) {
+      _subscribeToPositionStream(slowPoll: false);
+      unawaited(_eventLogger.log(
+        EventSeverity.critical,
+        'NATIVE_FGS_START_FAILED_USING_FALLBACK',
+        'Native foreground location service did not start; reverted to the existing Dart GPS stream.',
+      ));
     }
 
-    _subscribeToPositionStream(slowPoll: false);
-
-    // Self-healing safety net: if the position stream ever goes silent
-    // for far longer than any single deep-signal-loss gap should
-    // reasonably last, re-subscribe rather than staying stuck silently -
-    // covers the rare case where the underlying stream itself dies
-    // without throwing a catchable error.
     _watchdogTimer?.cancel();
-    _watchdogTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      _checkPositionStreamHealth,
+    _watchdogTimer = Timer.periodic(const Duration(seconds: 30), _checkPositionStreamHealth);
+    _nativeHealthTimer?.cancel();
+    _nativeHealthTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkNativeServiceHealth());
+
+    if (resumeFrom == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_rideActive) return;
+        _showBackgroundProtectionDialog();
+      });
+    }
+  }
+
+  Future<void> _listenToNativeRideService() async {
+    _nativeEventSubscription?.cancel();
+    _nativeEventSubscription = _nativeRideEvents.receiveBroadcastStream().listen(
+      (dynamic event) {
+        if (event is! String) return;
+        try {
+          final Map<String, dynamic> payload = jsonDecode(event) as Map<String, dynamic>;
+          final String type = payload['type']?.toString() ?? '';
+          if (type == 'location') {
+            _handleNativeLocation(payload);
+          } else if (type == 'service') {
+            final String status = payload['status']?.toString() ?? 'UNKNOWN';
+            _nativeServiceActive = payload['active'] == true;
+            if (status == 'TASK_REMOVED') {
+              unawaited(_eventLogger.log(
+                EventSeverity.warning,
+                'APP_TASK_REMOVED_SERVICE_CONTINUES',
+                'Android removed the app task while the active ride service continued.',
+              ));
+            }
+            if (mounted) setState(() {});
+          }
+        } catch (error) {
+          debugPrint('Native ride event parse error: $error');
+        }
+      },
+      onError: (Object error) => debugPrint('Native ride event channel error: $error'),
     );
+  }
+
+  Future<bool> _startNativeForegroundService() async {
+    try {
+      await _nativeRideChannel.invokeMethod<void>('startRideService');
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final dynamic health = await _nativeRideChannel.invokeMethod<dynamic>('getServiceHealth');
+      if (health is String) {
+        final Map<String, dynamic> data = jsonDecode(health) as Map<String, dynamic>;
+        _nativeServiceActive = data['active'] == true && data['serviceAlive'] == true;
+      } else {
+        _nativeServiceActive = true;
+      }
+      if (_nativeServiceActive) {
+        await _replayQueuedNativeLocations();
+        _updateNativeNotification(force: true);
+      }
+      return _nativeServiceActive;
+    } catch (error) {
+      debugPrint('Native foreground service start failed: $error');
+      _nativeServiceActive = false;
+      return false;
+    }
+  }
+
+  Future<void> _replayQueuedNativeLocations() async {
+    try {
+      final dynamic queued = await _nativeRideChannel.invokeMethod<dynamic>('drainQueuedLocations');
+      if (queued is! List) return;
+      for (final dynamic raw in queued) {
+        if (raw is String) {
+          try {
+            _handleNativeLocation(jsonDecode(raw) as Map<String, dynamic>);
+          } catch (error) {
+            debugPrint('Queued native fix parse failed: $error');
+          }
+        }
+      }
+    } catch (error) {
+      debugPrint('Queued native location replay failed: $error');
+    }
+  }
+
+  void _handleNativeLocation(Map<String, dynamic> payload) {
+    if (!_rideActive) return;
+    final int timestampMs = (payload['timestamp'] as num?)?.toInt() ?? DateTime.now().millisecondsSinceEpoch;
+    final Position position = Position(
+      latitude: (payload['latitude'] as num).toDouble(),
+      longitude: (payload['longitude'] as num).toDouble(),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestampMs),
+      accuracy: (payload['accuracy'] as num?)?.toDouble() ?? 0.0,
+      altitude: (payload['altitude'] as num?)?.toDouble() ?? 0.0,
+      altitudeAccuracy: 0.0,
+      heading: (payload['heading'] as num?)?.toDouble() ?? 0.0,
+      headingAccuracy: 0.0,
+      speed: (payload['speed'] as num?)?.toDouble() ?? 0.0,
+      speedAccuracy: 0.0,
+      floor: null,
+      isMocked: payload['isMocked'] == true,
+    );
+    _handleNewPosition(position);
+  }
+
+  Future<void> _stopNativeForegroundService() async {
+    try {
+      await _nativeRideChannel.invokeMethod<void>('stopRideService');
+    } catch (error) {
+      debugPrint('Native foreground service stop failed: $error');
+    }
+    _nativeServiceActive = false;
+  }
+
+  void _updateNativeNotification({bool force = false}) {
+    if (!_nativeServiceActive) return;
+    final DateTime now = DateTime.now();
+    if (!force && _lastNativeNotificationUpdate != null && now.difference(_lastNativeNotificationUpdate!) < const Duration(seconds: 5)) {
+      return;
+    }
+    _lastNativeNotificationUpdate = now;
+    unawaited(_nativeRideChannel.invokeMethod<void>('updateNotification', <String, dynamic>{
+      'distance': distanceText,
+      'speed': '${_currentSpeedKmh.toStringAsFixed(0)} km/h',
+      'status': _gpsSignalStatus,
+    }).catchError((Object error) {
+      debugPrint('Native notification update failed: $error');
+    }));
+  }
+
+  Future<void> _checkNativeServiceHealth() async {
+    if (!_rideActive) return;
+    try {
+      final dynamic raw = await _nativeRideChannel.invokeMethod<dynamic>('getServiceHealth');
+      if (raw is! String) return;
+      final Map<String, dynamic> data = jsonDecode(raw) as Map<String, dynamic>;
+      final bool active = data['active'] == true;
+      final bool alive = data['serviceAlive'] == true;
+      final int lastFixAt = (data['lastFixAt'] as num?)?.toInt() ?? 0;
+      final int ageMs = lastFixAt > 0 ? DateTime.now().millisecondsSinceEpoch - lastFixAt : 0;
+      _nativeServiceActive = active && alive;
+      if (!_nativeServiceActive) {
+        unawaited(_eventLogger.log(
+          EventSeverity.critical,
+          'NATIVE_FGS_NOT_RUNNING',
+          'Active ride detected that the Android foreground service is no longer running; attempting recovery.',
+        ));
+        final bool restarted = await _startNativeForegroundService();
+        if (!restarted && mounted) setState(() => _status = 'Background service unavailable');
+      } else if (ageMs > 90 * 1000 && mounted) {
+        setState(() => _status = 'GPS signal gap - service still active');
+      }
+    } catch (error) {
+      debugPrint('Native service health check failed: $error');
+    }
   }
 
   void _checkPositionStreamHealth(Timer timer) {
     if (!_rideActive) return;
+    if (_nativeServiceActive) {
+      unawaited(_checkNativeServiceHealth());
+      return;
+    }
 
     final DateTime? lastFixTime = _previousFixTime;
     if (lastFixTime == null) return;
@@ -518,44 +592,13 @@ class _RideScreenState extends State<RideScreen> {
     }
   }
 
-  /// Runs GPS tracking as a plain (non-foreground) location stream.
+  /// Legacy Dart GPS fallback used only if the native foreground service cannot start.
   ///
-  /// HISTORY, for whoever touches this next: this used to configure
-  /// `foregroundNotificationConfig` so the plugin would run as a genuine
-  /// Android foreground service with a persistent notification, which is
-  /// the *correct* way to survive screen lock / an incoming call
-  /// long-term. It was removed after this exact feature caused two
-  /// real-device crashes on a Xiaomi/MIUI phone
-  /// (`android.app.RemoteServiceException$CannotPostForegroundServiceNotificationException:
-  /// Bad notification for startForeground`). That specific exception is
-  /// thrown by the OS directly into the app's main thread via a Binder
-  /// callback (`ActivityThread.throwRemoteServiceException`) - it is
-  /// NOT a normal catchable exception, so no amount of Dart or Kotlin
-  /// try/catch around the call that triggers it can prevent the crash.
-  /// A correctly-configured custom drawable icon and the standard
-  /// `POST_NOTIFICATIONS` permission were both already in place and the
-  /// crash still happened, so the safest fix - given a driver-billing
-  /// app being fully unusable is worse than losing guaranteed
-  /// screen-lock survival - was to stop asking the plugin to start a
-  /// foreground service at all.
+  /// The primary active-ride path is the custom native Android location
+  /// foreground service. Keeping this fallback protects the existing v35
+  /// tracking behavior on a device/build where native service startup fails.
+  /// It never creates a second foreground service through Geolocator.
   ///
-  /// Trade-off this accepts: without a foreground service, Android is
-  /// more likely to throttle or pause location updates after an extended
-  /// period with the screen locked or the app backgrounded, especially
-  /// on aggressive-battery-management OEMs. The GPS-stream watchdog
-  /// (`_checkPositionStreamHealth`) and crash-safe persistence (2.4 in
-  /// README) still apply regardless. If reliable foreground-service
-  /// tracking is worth pursuing again later, the safer path is a custom
-  /// native Android foreground service built and tested directly (full
-  /// control over the notification) rather than depending on a
-  /// third-party plugin's internal, apparently OEM-fragile
-  /// notification-building code - see GPS_TRACKING_NOTES.md.
-  ///
-  /// [slowPoll] trades fix frequency for battery life: while the vehicle
-  /// is genuinely stationary (a long stop/break), there is nothing new to
-  /// bill every 2 seconds, and a long remote ride can't afford to drain
-  /// the battery polling that often the whole time. See
-  /// [_maybeAdjustPollInterval] for when this switches back and forth.
   void _subscribeToPositionStream({required bool slowPoll}) {
     _positionSubscription?.cancel();
 
@@ -589,6 +632,7 @@ class _RideScreenState extends State<RideScreen> {
     final bool shouldSlowPoll =
         current.speed >= 0 && current.speed < GpsFixValidator.stationarySpeedThresholdMps;
 
+    if (_nativeServiceActive) return;
     if (shouldSlowPoll == _isSlowPollMode) return;
 
     final DateTime? lastSwitch = _lastPollModeSwitchAt;
@@ -718,6 +762,7 @@ class _RideScreenState extends State<RideScreen> {
     _setGpsPosition(current, addBillingPoint: false);
 
     if (mounted) setState(() {});
+    _updateNativeNotification();
 
     _moveCamera(LatLng(current.latitude, current.longitude));
 
@@ -752,23 +797,105 @@ class _RideScreenState extends State<RideScreen> {
     }
   }
 
+  Future<void> _showBackgroundProtectionDialog() async {
+    if (!mounted) return;
+    Map<String, dynamic> profile = <String, dynamic>{};
+    try {
+      final dynamic raw = await _nativeRideChannel.invokeMethod<dynamic>('getDeviceProfile');
+      if (raw is Map) {
+        profile = raw.map((dynamic key, dynamic value) => MapEntry(key.toString(), value));
+      }
+    } catch (error) {
+      debugPrint('Device profile lookup failed: $error');
+    }
+
+    final String manufacturer = (profile['manufacturer'] ?? '').toString().toLowerCase();
+    final String brand = (profile['brand'] ?? '').toString().toLowerCase();
+    final String model = (profile['model'] ?? 'this phone').toString();
+    final String family = [manufacturer, brand].join(' ');
+
+    String guidance;
+    if (family.contains('xiaomi') || family.contains('redmi') || family.contains('poco')) {
+      guidance = 'Xiaomi/Redmi/POCO: keep YATRI unrestricted in Battery settings, allow Background Autostart where available, and avoid locking/force-stopping YATRI during an active ride.';
+    } else if (family.contains('oppo')) {
+      guidance = 'OPPO/ColorOS: allow YATRI foreground/background activity and auto-launch where those controls are available. Do not force-stop the app during an active ride.';
+    } else if (family.contains('realme')) {
+      guidance = 'realme UI: allow foreground activity, background activity and auto-launch for YATRI where available. Do not force-stop the app during an active ride.';
+    } else if (family.contains('samsung')) {
+      guidance = 'Samsung One UI: do not place YATRI in Sleeping or Deep Sleeping apps. Use the Never auto sleeping list for long active rides when needed.';
+    } else if (family.contains('oneplus')) {
+      guidance = 'OnePlus/OxygenOS: avoid restrictive battery optimization for YATRI during active rides and keep background activity allowed.';
+    } else if (family.contains('vivo')) {
+      guidance = 'vivo/Funtouch OS: allow normal background activity and any available auto-start/background-power permission for YATRI during active rides.';
+    } else if (family.contains('lava')) {
+      guidance = 'Lava: behavior varies by model and Android build. Keep YATRI allowed to run in the background and do not force-stop it. This device should be included in field validation.';
+    } else {
+      guidance = 'Android will keep the active location service visible with a persistent notification. Keep YATRI allowed to run in the background and avoid force-stopping it during an active ride.';
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Background protection'),
+        content: Text('$model\n\n$guidance\n\nThe ride service is genuine Android foreground location work. No hidden keep-alive or fake activity is used.'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmExitApp() async {
+    if (!mounted) return;
+    final bool? close = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Close YATRI CABS?'),
+        content: Text(
+          _rideActive
+              ? 'The screen will close, but the active ride will continue through the Android foreground service and notification.'
+              : 'Are you sure you want to close YATRI CABS?',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+    if (close == true) {
+      await _nativeRideChannel.invokeMethod<void>('closeTask');
+    }
+  }
+
+  void _enterPictureInPicture() {
+    unawaited(_nativeRideChannel.invokeMethod<void>('enterPip').catchError((Object error) {
+      debugPrint('PiP request failed: $error');
+    }));
+  }
+
   void _endRide() {
     _positionSubscription?.cancel();
     _positionSubscription = null;
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
+    _nativeHealthTimer?.cancel();
+    _nativeHealthTimer = null;
     _rideActive = false;
+    unawaited(_stopNativeForegroundService());
     try {
       WakelockPlus.disable();
     } catch (error) {
       debugPrint('Wakelock disable failed: $error');
     }
-    try {
-      _floating.cancelOnLeavePiP();
-    } catch (error) {
-      debugPrint('PiP cancel failed: $error');
-    }
-    // Ride finished cleanly - nothing left to recover on next launch.
     unawaited(_persistence.clear());
     if (mounted) setState(() {});
   }
@@ -777,6 +904,8 @@ class _RideScreenState extends State<RideScreen> {
   void dispose() {
     _positionSubscription?.cancel();
     _watchdogTimer?.cancel();
+    _nativeHealthTimer?.cancel();
+    _nativeEventSubscription?.cancel();
     _mapController?.dispose();
     try {
       WakelockPlus.disable();
@@ -795,20 +924,63 @@ class _RideScreenState extends State<RideScreen> {
   }
 
   Widget _buildFullScreen() {
-    return Scaffold(
-      backgroundColor: YatriColors.background,
-      body: SafeArea(
-        child: Column(
-          children: <Widget>[
-            _buildProgress(),
-            _buildEndRideButton(),
-            const SizedBox(height: 18),
-            Expanded(child: _buildMap()),
-            const SizedBox(height: 16),
-            _buildDistanceCard(),
-            const SizedBox(height: 18),
-            _buildBottomBar(),
-          ],
+    return PopScope<void>(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, void result) {
+        if (didPop) return;
+        if (_rideActive) {
+          _enterPictureInPicture();
+        } else {
+          _confirmExitApp();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: YatriColors.background,
+        body: SafeArea(
+          child: Stack(
+            children: <Widget>[
+              Column(
+                children: <Widget>[
+                  _buildProgress(),
+                  _buildEndRideButton(),
+                  const SizedBox(height: 18),
+                  Expanded(child: _buildMap()),
+                  const SizedBox(height: 16),
+                  _buildDistanceCard(),
+                  const SizedBox(height: 18),
+                  _buildBottomBar(),
+                ],
+              ),
+              Positioned(
+                top: 4,
+                right: 8,
+                child: Material(
+                  color: Colors.transparent,
+                  child: PopupMenuButton<String>(
+                    tooltip: 'Ride options',
+                    onSelected: (String value) {
+                      switch (value) {
+                        case 'pip':
+                          _enterPictureInPicture();
+                          break;
+                        case 'protection':
+                          unawaited(_showBackgroundProtectionDialog());
+                          break;
+                        case 'close':
+                          unawaited(_confirmExitApp());
+                          break;
+                      }
+                    },
+                    itemBuilder: (BuildContext context) => const <PopupMenuEntry<String>>[
+                      PopupMenuItem<String>(value: 'pip', child: Text('Minimize to PiP')),
+                      PopupMenuItem<String>(value: 'protection', child: Text('Background protection')),
+                      PopupMenuItem<String>(value: 'close', child: Text('Close YATRI CABS')),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
