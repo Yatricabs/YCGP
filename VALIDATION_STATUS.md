@@ -4,22 +4,22 @@
 
 - Source tree unpacked and inspected from the v36 baseline.
 - Removed the custom `afterEvaluate { tasks.named("assembleRelease") ... }` APK-copy hook.
-- Verified the Gradle wrapper configuration points to Gradle 8.12.
+- Verified the Gradle wrapper configuration points to Gradle 8.14.
 - Verified Android manifest declares a `location` Foreground Service and the required foreground-service/location permissions.
 - Verified the native service notification uses a bundled drawable small icon and an immutable `PendingIntent`.
 - Verified active-ride service/task-removal/PiP communication code is present.
 - Verified documentation files are present and updated.
 - Verified the output archive with `unzip -t` after packaging.
-- Replaced the CI `flutter build apk --release` step with direct Gradle 8.12 `:app:assembleRelease`, explicit APK discovery, and branch-specific artifact upload.
-- Fixed CI workflow references to a missing `android/gradlew` wrapper script; the project uses the GitHub Actions Gradle 8.12 installation directly.
-- CI generates/verifies the Gradle 8.12 Wrapper and invokes `./gradlew :app:assembleRelease` from `android/`.
+- Replaced the CI `flutter build apk --release` step with direct Gradle 8.14 `:app:assembleRelease`, explicit APK discovery, and branch-specific artifact upload.
+- Fixed CI workflow references to a missing `android/gradlew` wrapper script; the project uses the GitHub Actions Gradle 8.14 installation directly.
+- CI generates/verifies the Gradle 8.14 Wrapper and invokes `./gradlew :app:assembleRelease` from `android/`.
 - Updated documentation for the new CI build path.
 
 ## Not executed here
 
 - Flutter package resolution (`flutter pub get`).
 - Dart static analysis (`flutter analyze`).
-- Release APK compilation in this packaging environment (Flutter/Android SDK unavailable). The repository CI workflow now performs `gradle :app:assembleRelease` with Gradle 8.12.
+- Release APK compilation in this packaging environment (Flutter/Android SDK unavailable). The repository CI workflow now performs `gradle :app:assembleRelease` with Gradle 8.14.
 - Installation on a physical Android phone.
 - Xiaomi/Redmi/POCO, OPPO/realme, Samsung, OnePlus, vivo, Lava, or Android Go OEM behavior tests.
 
@@ -42,10 +42,10 @@ The reason is environmental: this working container does not provide the Flutter
 ## Gradle Wrapper packaging note (v40)
 
 - `android/gradlew` and `android/gradlew.bat` are now present.
-- `gradle-wrapper.properties` remains pinned to Gradle 8.12.
+- `gradle-wrapper.properties` remains pinned to Gradle 8.14.
 - CI generates the official Gradle Wrapper JAR with `gradle wrapper --gradle-version 8.12` before invoking `./gradlew`.
 - The official binary wrapper JAR was not fabricated in this packaging environment because no local Gradle distribution was available and external binary retrieval was unavailable.
-- The official Gradle 8.12 wrapper JAR checksum is recorded in `android/gradle/wrapper/gradle-wrapper.jar.sha256` for verification when the JAR is generated on a developer/CI machine.
+- The official Gradle 8.14 wrapper JAR checksum is recorded in `android/gradle/wrapper/gradle-wrapper.jar.sha256` for verification when the JAR is generated on a developer/CI machine.
 
 ## v1.0.5+6 CI patch
 
@@ -54,4 +54,4 @@ The GitHub Actions workflow now explicitly runs `chmod +x android/gradlew` befor
 
 ## v42 CI correction
 
-The CI workflow no longer calls `./android/gradlew` in the initial tool-version step. It checks the runner-installed `gradle --version`, generates the Gradle 8.12 wrapper, restores executable permission with `chmod +x android/gradlew`, verifies the wrapper, and then runs `:app:assembleRelease`.
+The CI workflow no longer calls `./android/gradlew` in the initial tool-version step. It checks the runner-installed `gradle --version`, generates the Gradle 8.14 wrapper, restores executable permission with `chmod +x android/gradlew`, verifies the wrapper, and then runs `:app:assembleRelease`.

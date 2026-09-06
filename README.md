@@ -343,7 +343,7 @@ FlutLab's own web build server can intermittently fail with a generic
 ships with a GitHub Actions workflow so the Android release build does not
 depend on FlutLab's server.
 
-The CI workflow builds `:app:assembleRelease` directly with Gradle 8.12
+The CI workflow builds `:app:assembleRelease` directly with Gradle 8.14
 after Flutter dependencies are resolved. This is intentional: the previous
 `flutter build apk --release` path could finish the underlying Gradle work
 without allowing Flutter's output-discovery step to find the generated APK,
@@ -376,7 +376,7 @@ start the configured Android workflow.
 ### Gradle release-build path
 The Android Gradle Plugin writes the release APK to
 `android/app/build/outputs/apk/release/app-release.apk`. The GitHub Actions
-workflow now uses the Gradle 8.12 Wrapper and verifies that exact output before
+workflow now uses the Gradle 8.14 Wrapper and verifies that exact output before
 uploading it. No custom Gradle task hook or APK-copy hook is used.
 
 ---
@@ -402,4 +402,4 @@ uploading it. No custom Gradle task hook or APK-copy hook is used.
 
 ## CI build path
 
-GitHub Actions installs Gradle 8.12 and invokes `./gradlew :app:assembleRelease` through the Gradle 8.12 Wrapper from `android/`. The CI workflow uses `android/gradlew` after generating the official wrapper JAR in the CI workspace.
+GitHub Actions installs Gradle 8.14 and invokes `./gradlew :app:assembleRelease` through the Gradle 8.14 Wrapper from `android/`. The CI workflow uses `android/gradlew` after generating the official wrapper JAR in the CI workspace.

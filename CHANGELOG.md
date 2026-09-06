@@ -2,7 +2,7 @@
 
 - Fixed the GitHub Actions ordering so `android/gradlew` is never executed before its executable permission is restored.
 - `gradle --version` is used for the initial Gradle tool check.
-- The workflow then generates/refreshes the Gradle 8.12 wrapper, applies `chmod +x android/gradlew`, verifies `./gradlew --version`, and only then builds the release APK.
+- The workflow then generates/refreshes the Gradle 8.14 wrapper, applies `chmod +x android/gradlew`, verifies `./gradlew --version`, and only then builds the release APK.
 - No Flutter GPS, billing, Foreground Service, PiP, or OEM-resilience code was changed.
 
 ---
@@ -10,13 +10,13 @@
 ## 1.0.5+6 — Standard Gradle Wrapper restoration
 
 - Added `android/gradlew` and `android/gradlew.bat` wrapper entry points.
-- CI now generates the official Gradle 8.12 Wrapper JAR, verifies the wrapper, and builds with `./gradlew :app:assembleRelease`.
-- Added the official Gradle 8.12 wrapper-JAR checksum reference.
+- CI now generates the official Gradle 8.14 Wrapper JAR, verifies the wrapper, and builds with `./gradlew :app:assembleRelease`.
+- Added the official Gradle 8.14 wrapper-JAR checksum reference.
 - Kept GPS/FGS, billing, PiP, persistence, and UI behavior unchanged.
 
 ## 1.0.5+6 — CI wrapper-path fix
 
-- Removed all GitHub Actions references to `./android/gradlew` because this repository intentionally uses the GitHub-hosted Gradle 8.12 installation and does not contain the Gradle wrapper script.
+- Removed all GitHub Actions references to `./android/gradlew` because this repository intentionally uses the GitHub-hosted Gradle 8.14 installation and does not contain the Gradle wrapper script.
 - CI now verifies the installed Gradle executable with `gradle --version`.
 - CI builds with `gradle :app:assembleRelease --no-daemon --stacktrace --console=plain` from the Android project directory.
 - Kept the APK verification and branch-specific artifact upload.
@@ -24,7 +24,7 @@
 
 ## 1.0.3+4 — CI release-build hardening
 
-- Updated GitHub Actions to build the Android release with Gradle 8.12
+- Updated GitHub Actions to build the Android release with Gradle 8.14
   directly instead of relying on `flutter build apk --release` to discover
   the generated APK.
 - Added explicit CI creation of `android/local.properties` with the Flutter

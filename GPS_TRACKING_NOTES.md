@@ -5,7 +5,7 @@ Android background behavior, or the driver recovery path changes.
 
 ## CI release build note
 
-GitHub Actions uses Gradle 8.12 directly for the Android release task and
+GitHub Actions uses Gradle 8.14 directly for the Android release task and
 verifies the generated APK at `android/app/build/outputs/apk/release/app-release.apk`.
 The Flutter CLI's `Already watching path: .../android` message is not treated as
 a release-build success/failure signal; the CI job relies on the Gradle exit code
