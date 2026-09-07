@@ -1,12 +1,14 @@
 package com.yatricabs.gpsbilling
 
 import android.app.PictureInPictureParams
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.content.pm.PackageManager
 import android.util.Rational
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -18,10 +20,12 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val METHOD_CHANNEL = "yatri_cabs/ride_service"
         private const val EVENT_CHANNEL = "yatri_cabs/ride_events"
+        private const val REQUEST_CODE_PICK_BACKUP_FOLDER = 9001
     }
 
     private var eventSink: EventChannel.EventSink? = null
     private var receiverRegistered = false
+    private var pendingBackupFolderResult: MethodChannel.Result? = null
 
     private val rideEventReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -32,6 +36,13 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureRidePip()
+        requestNotificationPermissionIfNeeded()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        configureRidePip()
     }
 
     override fun configureFlutterEngine(flutterEngine: io.flutter.embedding.engine.FlutterEngine) {
@@ -41,14 +52,52 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "startRideService" -> {
                     startRideService()
+                    configureRidePip(autoEnter = true)
                     result.success(true)
                 }
                 "stopRideService" -> {
                     stopRideService()
+                    configureRidePip(autoEnter = false)
                     result.success(true)
                 }
                 "getServiceHealth" -> result.success(RideTrackingForegroundService.serviceHealth(this))
                 "drainQueuedLocations" -> result.success(RideTrackingForegroundService.drainQueuedLocations(this))
+                "getDiagnosticsLog" -> result.success(RideTrackingForegroundService.getDiagnosticsLog(this))
+                "clearDiagnosticsLog" -> {
+                    RideTrackingForegroundService.clearDiagnosticsLog(this)
+                    result.success(true)
+                }
+                "hasBackupFolder" -> result.success(SafBackupManager.hasUsableBackupFolder(this))
+                "pickBackupFolder" -> {
+                    pendingBackupFolderResult?.success(false)
+                    pendingBackupFolderResult = result
+                    try {
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
+                            )
+                        }
+                        @Suppress("DEPRECATION")
+                        startActivityForResult(intent, REQUEST_CODE_PICK_BACKUP_FOLDER)
+                    } catch (_: Exception) {
+                        pendingBackupFolderResult = null
+                        result.success(false)
+                    }
+                }
+                "writeBackupFile" -> {
+                    val fileName = call.argument<String>("fileName")
+                    val content = call.argument<String>("content")
+                    result.success(
+                        if (fileName == null || content == null) false
+                        else SafBackupManager.writeFile(this, fileName, content),
+                    )
+                }
+                "readBackupFile" -> {
+                    val fileName = call.argument<String>("fileName")
+                    result.success(if (fileName == null) null else SafBackupManager.readFile(this, fileName))
+                }
                 "updateNotification" -> {
                     RideTrackingForegroundService.updateNotification(
                         this,
@@ -130,7 +179,31 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 
+    @Deprecated("Deprecated in Android API 33; retained for the folder picker callback.")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_CODE_PICK_BACKUP_FOLDER) return
+        val pending = pendingBackupFolderResult
+        pendingBackupFolderResult = null
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) {
+            pending?.success(false)
+            return
+        }
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+            SafBackupManager.persistFolderUri(this, uri)
+            pending?.success(true)
+        } catch (_: Exception) {
+            pending?.success(false)
+        }
+    }
+
     private fun startRideService() {
+        requestNotificationPermissionIfNeeded()
         val intent = Intent(this, RideTrackingForegroundService::class.java).apply {
             action = RideTrackingForegroundService.ACTION_START
         }
@@ -138,6 +211,13 @@ class MainActivity : FlutterActivity() {
             ContextCompat.startForegroundService(this, intent)
         } else {
             startService(intent)
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9101)
         }
     }
 
@@ -154,20 +234,37 @@ class MainActivity : FlutterActivity() {
     private fun enterRidePip() {
         if (Build.VERSION.SDK_INT < 26) return
         try {
-            val paramsBuilder = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-            if (Build.VERSION.SDK_INT >= 31) {
-                paramsBuilder.setAutoEnterEnabled(true)
-                paramsBuilder.setSeamlessResizeEnabled(true)
-            }
-            enterPictureInPictureMode(paramsBuilder.build())
+            configureRidePip()
+            enterPictureInPictureMode(currentPipParams())
         } catch (_: Exception) {
             // PiP is optional; the ride service is independent of it.
         }
     }
 
+    private fun configureRidePip(autoEnter: Boolean? = null) {
+        if (Build.VERSION.SDK_INT < 26) return
+        try {
+            setPictureInPictureParams(currentPipParams(autoEnter))
+        } catch (_: Exception) {
+            // PiP configuration is best-effort on unsupported device builds.
+        }
+    }
+
+    private fun currentPipParams(autoEnter: Boolean? = null): PictureInPictureParams {
+        val paramsBuilder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+        if (Build.VERSION.SDK_INT >= 31) {
+            paramsBuilder
+                .setAutoEnterEnabled(
+                    autoEnter ?: RideTrackingForegroundService.isRideActive(this),
+                )
+                .setSeamlessResizeEnabled(true)
+        }
+        return paramsBuilder.build()
+    }
+
     override fun onUserLeaveHint() {
-        if (RideTrackingForegroundService.isRideActive(this)) {
+        if (Build.VERSION.SDK_INT < 31 && RideTrackingForegroundService.isRideActive(this)) {
             enterRidePip()
         }
         super.onUserLeaveHint()

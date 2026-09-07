@@ -8,11 +8,12 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
-        android:name="${applicationName}"
+        android:name=".YatriApplication"
         android:label="YATRI CABS"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:resizeableActivity="true">
 
         <meta-data
             android:name="com.google.android.geo.API_KEY"

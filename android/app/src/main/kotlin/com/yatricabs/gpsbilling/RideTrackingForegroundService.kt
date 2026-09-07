@@ -13,8 +13,12 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -39,7 +43,7 @@ class RideTrackingForegroundService : Service(), LocationListener {
         const val EVENT_LOCATION = "com.yatricabs.gpsbilling.EVENT_LOCATION"
         const val EVENT_SERVICE = "com.yatricabs.gpsbilling.EVENT_SERVICE"
 
-        private const val CHANNEL_ID = "yatri_active_ride"
+        private const val CHANNEL_ID = "yatri_active_ride_v2"
         private const val NOTIFICATION_ID = 4107
         private const val PREFS = "yatri_native_ride_service"
         private const val KEY_ACTIVE = "active"
@@ -106,6 +110,15 @@ class RideTrackingForegroundService : Service(), LocationListener {
         fun updateNotification(context: Context, distanceText: String, speedText: String, status: String) {
             instance?.showNotification(distanceText, speedText, status)
         }
+
+        fun getDiagnosticsLog(context: Context): String = context
+            .getSharedPreferences(YatriApplication.DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+            .getString(YatriApplication.KEY_DIAGNOSTICS_LOG, "[]") ?: "[]"
+
+        fun clearDiagnosticsLog(context: Context) {
+            context.getSharedPreferences(YatriApplication.DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+                .edit().remove(YatriApplication.KEY_DIAGNOSTICS_LOG).apply()
+        }
     }
 
     private lateinit var locationManager: LocationManager
@@ -113,6 +126,23 @@ class RideTrackingForegroundService : Service(), LocationListener {
     private var lastLocation: Location? = null
     private var slowPolling = false
     private var lastPollingSwitchElapsed = 0L
+    private var wakeLock: PowerManager.WakeLock? = null
+    private val watchdogHandler = Handler(Looper.getMainLooper())
+    private val watchdogRunnable = object : Runnable {
+        override fun run() {
+            if (prefs.getBoolean(KEY_ACTIVE, false)) {
+                val lastFixAt = prefs.getLong(KEY_LAST_FIX_AT, 0L)
+                val silenceMs = System.currentTimeMillis() - lastFixAt
+                if (lastFixAt > 0L && silenceMs > 45_000L) {
+                    appendDiagnostic("GPS_FIX_STALLED_AUTO_RECOVERED", JSONObject().apply {
+                        put("silenceMs", silenceMs)
+                    })
+                    requestLocationUpdates()
+                }
+                watchdogHandler.postDelayed(this, 30_000L)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -171,7 +201,10 @@ class RideTrackingForegroundService : Service(), LocationListener {
                 .putString(KEY_STATUS, "RUNNING")
                 .apply()
 
+            acquireWakeLock()
             requestLocationUpdates()
+            watchdogHandler.removeCallbacks(watchdogRunnable)
+            watchdogHandler.postDelayed(watchdogRunnable, 30_000L)
             broadcastServiceEvent("RUNNING")
         } catch (security: SecurityException) {
             prefs.edit().putString(KEY_STATUS, "START_PERMISSION_ERROR").apply()
@@ -187,11 +220,35 @@ class RideTrackingForegroundService : Service(), LocationListener {
     }
 
     private fun stopRideService() {
+        watchdogHandler.removeCallbacks(watchdogRunnable)
+        releaseWakeLock()
         removeLocationUpdates()
         prefs.edit().putBoolean(KEY_ACTIVE, false).putString(KEY_STATUS, "STOPPED").apply()
         broadcastServiceEvent("STOPPED")
         stopForegroundCompat()
         stopSelf()
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        try {
+            val manager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = manager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "YatriCabs:RideTracking").apply {
+                setReferenceCounted(false)
+                acquire(12 * 60 * 60 * 1000L)
+            }
+        } catch (_: Exception) {
+            // GPS tracking remains functional without the optional wake lock.
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {
+            // Safe teardown.
+        }
+        wakeLock = null
     }
 
     private fun requestLocationUpdates() {
@@ -291,6 +348,7 @@ class RideTrackingForegroundService : Service(), LocationListener {
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun buildNotification(distanceText: String, speedText: String, status: String): Notification {
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -318,6 +376,7 @@ class RideTrackingForegroundService : Service(), LocationListener {
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setShowWhen(false)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
             .build()
     }
 
@@ -327,11 +386,12 @@ class RideTrackingForegroundService : Service(), LocationListener {
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Active ride tracking",
-            NotificationManager.IMPORTANCE_LOW,
+            NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
             description = "Shows the active YATRI CABS ride tracking state."
             setShowBadge(false)
             enableVibration(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
         manager.createNotificationChannel(channel)
     }
@@ -354,6 +414,9 @@ class RideTrackingForegroundService : Service(), LocationListener {
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (prefs.getBoolean(KEY_ACTIVE, false)) {
             prefs.edit().putLong(KEY_LAST_TASK_REMOVED_AT, System.currentTimeMillis()).apply()
+            appendDiagnostic("APP_SWIPED_FROM_RECENTS", JSONObject().apply {
+                put("batteryPercent", batteryPercent())
+            })
             showNotification("Ride active", "GPS running", "YATRI continues in background")
             broadcastServiceEvent("TASK_REMOVED")
             vibrateOnce()
@@ -363,9 +426,42 @@ class RideTrackingForegroundService : Service(), LocationListener {
     }
 
     override fun onDestroy() {
+        watchdogHandler.removeCallbacks(watchdogRunnable)
+        releaseWakeLock()
         removeLocationUpdates()
+        if (prefs.getBoolean(KEY_ACTIVE, false)) {
+            appendDiagnostic("SERVICE_KILLED_UNEXPECTEDLY", JSONObject().apply {
+                put("batteryPercent", batteryPercent())
+                put("screenInteractive", isScreenInteractive())
+                val lastFixAt = prefs.getLong(KEY_LAST_FIX_AT, 0L)
+                put("msSinceLastFix", if (lastFixAt > 0L) System.currentTimeMillis() - lastFixAt else -1L)
+            })
+            prefs.edit().putString(KEY_STATUS, "KILLED_UNEXPECTEDLY").apply()
+        }
         if (instance === this) instance = null
         super.onDestroy()
+    }
+
+    private fun appendDiagnostic(type: String, detail: JSONObject) {
+        try {
+            val diagnostics = getSharedPreferences(YatriApplication.DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+            YatriApplication.appendDiagnostic(diagnostics, type, detail)
+        } catch (_: Exception) {
+            // Diagnostics are best effort and must not affect tracking.
+        }
+    }
+
+    private fun batteryPercent(): Int = try {
+        (getSystemService(Context.BATTERY_SERVICE) as BatteryManager)
+            .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    } catch (_: Exception) {
+        -1
+    }
+
+    private fun isScreenInteractive(): Boolean = try {
+        (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
+    } catch (_: Exception) {
+        true
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

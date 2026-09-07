@@ -2,13 +2,13 @@
 
 This build uses:
 
-- Android Gradle Plugin: 8.11.1
-- Gradle wrapper: 8.14
-- Kotlin Gradle Plugin: 2.2.20
+- Android Gradle Plugin: 9.0.1
+- Gradle wrapper: 9.1.0
+- Kotlin Gradle Plugin: 2.3.20
 - Java/JDK: 17
 
-The project intentionally does not enable AGP 9 built-in Kotlin/new DSL migration.
-The Flutter Gradle plugin currently requires Kotlin >= 2.2.20 for this Flutter SDK.
+The project uses the AGP 9-compatible Kotlin plugin and Gradle wrapper required by
+the current Flutter toolchain.
 
 Build from the project root:
 

@@ -13,9 +13,33 @@ import 'package:flutter/services.dart';
 import 'event_logger.dart';
 import 'gps_validator.dart';
 import 'ride_persistence.dart';
+import 'saf_backup_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+
+  final EventLogger crashLogger = EventLogger();
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    unawaited(crashLogger.log(
+      EventSeverity.critical,
+      'DART_FRAMEWORK_ERROR',
+      details.exceptionAsString(),
+      context: <String, dynamic>{
+        if (details.stack != null) 'stack': details.stack.toString(),
+      },
+    ));
+  };
+  ui.PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    unawaited(crashLogger.log(
+      EventSeverity.critical,
+      'DART_UNCAUGHT_ERROR',
+      error.toString(),
+      context: <String, dynamic>{'stack': stack.toString()},
+    ));
+    return false;
+  };
+
   runApp(const YatriCabsApp());
 }
 
@@ -148,7 +172,82 @@ class _RideScreenState extends State<RideScreen> {
     super.initState();
     _generateCarIcon();
     _listenToNativeRideService();
+    unawaited(_importNativeDiagnostics());
     _initializeRide();
+  }
+
+  Future<void> _importNativeDiagnostics() async {
+    try {
+      final dynamic raw =
+          await _nativeRideChannel.invokeMethod<dynamic>('getDiagnosticsLog');
+      if (raw is! String) return;
+      final List<dynamic> entries = jsonDecode(raw) as List<dynamic>;
+      for (final dynamic rawEntry in entries) {
+        final Map<String, dynamic> entry = rawEntry as Map<String, dynamic>;
+        final String type = entry['type'] as String? ?? 'NATIVE_EVENT';
+        final int timestampMs = entry['timestamp'] as int? ?? 0;
+        final Map<String, dynamic>? detail =
+            entry['detail'] as Map<String, dynamic>?;
+        await _eventLogger.log(
+          EventSeverity.critical,
+          type,
+          _describeNativeDiagnostic(type, detail),
+          context: <String, dynamic>{
+            if (timestampMs > 0)
+              'nativeTimestamp':
+                  DateTime.fromMillisecondsSinceEpoch(timestampMs).toIso8601String(),
+            if (detail != null) ...detail,
+          },
+        );
+      }
+      if (entries.isNotEmpty) {
+        await _nativeRideChannel.invokeMethod<dynamic>('clearDiagnosticsLog');
+      }
+    } catch (error) {
+      debugPrint('Failed to import native diagnostics: $error');
+    }
+  }
+
+  String _describeNativeDiagnostic(String type, Map<String, dynamic>? detail) {
+    switch (type) {
+      case 'SERVICE_KILLED_UNEXPECTEDLY':
+        return 'Ride tracking service was killed unexpectedly.';
+      case 'APP_SWIPED_FROM_RECENTS':
+        return 'App was swiped away while a ride was active.';
+      case 'GPS_FIX_STALLED_AUTO_RECOVERED':
+        return 'GPS delivery stalled and tracking restarted automatically.';
+      case 'NATIVE_CRASH':
+        return 'Native app crash: ${detail?['exceptionClass'] ?? 'unknown'}';
+      default:
+        return 'Native event: $type';
+    }
+  }
+
+  Future<void> _ensureBackupFolderConfigured() async {
+    if (await SafBackupService.hasBackupFolder() || !mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Choose a backup folder'),
+        content: const Text(
+          'Pick a folder once to keep a live backup of the active ride. '
+          'You can skip this and configure it later from diagnostics.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Skip for now'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.of(dialogContext).pop();
+              await SafBackupService.pickBackupFolder();
+            },
+            child: const Text('Choose folder'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Draws a small white top-view car marker entirely in code (no external
@@ -266,6 +365,7 @@ class _RideScreenState extends State<RideScreen> {
     // If the app was killed mid-ride last time (crash, OS kill, dead
     // battery), recover the distance/route collected so far instead of
     // silently restarting the bill from zero.
+    await _ensureBackupFolderConfigured();
     final RideProgress? recovered = await _persistence.loadInProgressRide();
 
     try {
@@ -966,6 +1066,9 @@ class _RideScreenState extends State<RideScreen> {
                         case 'protection':
                           unawaited(_showBackgroundProtectionDialog());
                           break;
+                        case 'diagnostics':
+                          unawaited(_showDiagnosticsLogViewer());
+                          break;
                         case 'close':
                           unawaited(_confirmExitApp());
                           break;
@@ -973,6 +1076,7 @@ class _RideScreenState extends State<RideScreen> {
                     },
                     itemBuilder: (BuildContext context) => const <PopupMenuEntry<String>>[
                       PopupMenuItem<String>(value: 'pip', child: Text('Minimize to PiP')),
+                      PopupMenuItem<String>(value: 'diagnostics', child: Text('Diagnostics log')),
                       PopupMenuItem<String>(value: 'protection', child: Text('Background protection')),
                       PopupMenuItem<String>(value: 'close', child: Text('Close YATRI CABS')),
                     ],
@@ -1030,6 +1134,78 @@ class _RideScreenState extends State<RideScreen> {
                 ),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showDiagnosticsLogViewer() async {
+    if (!mounted) return;
+    await _importNativeDiagnostics();
+    final List<AppEvent> events = await _eventLogger.getPendingEvents();
+    final List<AppEvent> recent = events.reversed.toList();
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Diagnostics log'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 420,
+          child: recent.isEmpty
+              ? const Center(child: Text('No events recorded yet.'))
+              : ListView.separated(
+                  itemCount: recent.length,
+                  separatorBuilder: (_, __) => const Divider(height: 16),
+                  itemBuilder: (BuildContext context, int index) {
+                    final AppEvent event = recent[index];
+                    final Color color = switch (event.severity) {
+                      EventSeverity.critical => Colors.red,
+                      EventSeverity.warning => Colors.orange,
+                      EventSeverity.info => YatriColors.dark,
+                    };
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          '${event.timestamp.toLocal()}  •  ${event.code}',
+                          style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 12),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(event.message, style: const TextStyle(fontSize: 13)),
+                      ],
+                    );
+                  },
+                ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () async {
+              final bool granted = await SafBackupService.pickBackupFolder();
+              if (dialogContext.mounted) {
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
+                  SnackBar(content: Text(granted ? 'Backup folder set' : 'No folder selected')),
+                );
+              }
+            },
+            child: const Text('Backup folder'),
+          ),
+          TextButton(
+            onPressed: () {
+              final String text = recent.map((AppEvent event) =>
+                  '${event.timestamp} [${event.severity.name}] ${event.code}: ${event.message}').join('\n\n');
+              Clipboard.setData(ClipboardData(text: text));
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                const SnackBar(content: Text('Copied to clipboard')),
+              );
+            },
+            child: const Text('Copy all'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close'),
           ),
         ],
       ),
@@ -1435,13 +1611,16 @@ class _RideScreenState extends State<RideScreen> {
                 ),
               ),
             ),
-            const Positioned(
+            Positioned(
               right: 32,
               top: 20,
-              child: Icon(
-                Icons.settings_outlined,
-                color: Colors.white,
-                size: 38,
+              child: GestureDetector(
+                onTap: _showDiagnosticsLogViewer,
+                child: const Icon(
+                  Icons.settings_outlined,
+                  color: Colors.white,
+                  size: 38,
+                ),
               ),
             ),
           ],

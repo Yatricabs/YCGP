@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'saf_backup_service.dart';
 
 /// Saves and restores in-progress ride state to the device's local
 /// storage (SharedPreferences).
@@ -59,6 +62,20 @@ class RidePersistence {
       rideStartTime.millisecondsSinceEpoch,
     );
     await prefs.setString(_keyRoutePoints, _encodeRoute(routePoints));
+
+    unawaited(SafBackupService.writeFile(
+      SafBackupService.rideBackupFileName,
+      jsonEncode(<String, dynamic>{
+        'active': true,
+        'totalDistanceMeters': totalDistanceMeters,
+        'previousLat': previousLat,
+        'previousLng': previousLng,
+        'previousAltitude': previousAltitude,
+        'previousFixTimeMillis': previousFixTime.millisecondsSinceEpoch,
+        'rideStartTimeMillis': rideStartTime.millisecondsSinceEpoch,
+        'routePoints': _routeToJsonList(routePoints),
+      }),
+    ));
   }
 
   /// Called once when the app starts. If a ride was left running (app was
@@ -67,13 +84,13 @@ class RidePersistence {
   Future<RideProgress?> loadInProgressRide() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     final bool active = prefs.getBool(_keyActive) ?? false;
-    if (!active) return null;
+    if (!active) return _loadFromSafBackup();
 
     final double? totalDistance = prefs.getDouble(_keyTotalDistance);
     final double? prevLat = prefs.getDouble(_keyPrevLat);
     final double? prevLng = prefs.getDouble(_keyPrevLng);
     if (totalDistance == null || prevLat == null || prevLng == null) {
-      return null;
+      return _loadFromSafBackup();
     }
 
     // Older saved data (from before altitude/timestamp were tracked)
@@ -112,7 +129,54 @@ class RidePersistence {
     await prefs.remove(_keyPrevFixTimeMillis);
     await prefs.remove(_keyRideStartTimeMillis);
     await prefs.remove(_keyRoutePoints);
+    unawaited(SafBackupService.writeFile(
+      SafBackupService.rideBackupFileName,
+      jsonEncode(<String, dynamic>{'active': false}),
+    ));
   }
+
+  Future<RideProgress?> _loadFromSafBackup() async {
+    final String? raw =
+        await SafBackupService.readFile(SafBackupService.rideBackupFileName);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final Map<String, dynamic> data = jsonDecode(raw) as Map<String, dynamic>;
+      if (data['active'] != true) return null;
+      final double? totalDistance =
+          (data['totalDistanceMeters'] as num?)?.toDouble();
+      final double? prevLat = (data['previousLat'] as num?)?.toDouble();
+      final double? prevLng = (data['previousLng'] as num?)?.toDouble();
+      if (totalDistance == null || prevLat == null || prevLng == null) return null;
+      final int? prevFixMillis = data['previousFixTimeMillis'] as int?;
+      final DateTime prevFixTime = prevFixMillis == null
+          ? DateTime.now()
+          : DateTime.fromMillisecondsSinceEpoch(prevFixMillis);
+      final int? rideStartMillis = data['rideStartTimeMillis'] as int?;
+      final DateTime rideStartTime = rideStartMillis == null
+          ? prevFixTime
+          : DateTime.fromMillisecondsSinceEpoch(rideStartMillis);
+      return RideProgress(
+        totalDistanceMeters: totalDistance,
+        previousLat: prevLat,
+        previousLng: prevLng,
+        previousAltitude: (data['previousAltitude'] as num?)?.toDouble() ?? 0.0,
+        previousFixTime: prevFixTime,
+        rideStartTime: rideStartTime,
+        routePoints: (data['routePoints'] as List<dynamic>?)
+                ?.map((dynamic point) => LatLng(
+                      ((point as List<dynamic>)[0] as num).toDouble(),
+                      (point[1] as num).toDouble(),
+                    ))
+                .toList() ??
+            <LatLng>[],
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<List<double>> _routeToJsonList(List<LatLng> points) =>
+      points.map((LatLng point) => <double>[point.latitude, point.longitude]).toList();
 
   String _encodeRoute(List<LatLng> points) {
     return jsonEncode(
