@@ -33,7 +33,7 @@ void main() {
     expect(restored.previousLng, 77.2100);
     expect(restored.routePoints, hasLength(2));
     expect(restored.rideStartTime.millisecondsSinceEpoch,
-      start.millisecondsSinceEpoch);
+        start.millisecondsSinceEpoch);
   });
 
   test('clear removes local recovery state', () async {

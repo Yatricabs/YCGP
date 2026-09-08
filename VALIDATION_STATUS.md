@@ -6,6 +6,9 @@
 - `flutter analyze` passes with no Dart issues.
 - `flutter test` passes: 7 tests, including GPS edge cases, persistence
 	recovery/clear behavior, and a 50,000-fix GPS stress test.
+- Test files: `test/gps_validator_test.dart`,
+	`test/gps_validator_stress_test.dart`, and
+	`test/ride_persistence_test.dart`.
 - `flutter build apk --debug --no-pub` completed successfully after the refactor.
 - Android Gradle debug compilation completed successfully with Gradle 9.2.0.
 - The refactored source has no stale references to the removed inline color, channel, or diagnostics implementations.
