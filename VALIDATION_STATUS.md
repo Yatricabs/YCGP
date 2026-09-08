@@ -4,10 +4,19 @@
 
 - `flutter pub get` completed successfully.
 - `flutter analyze` passes with no Dart issues.
+- `flutter test` passes: 7 tests, including GPS edge cases, persistence
+	recovery/clear behavior, and a 50,000-fix GPS stress test.
 - `flutter build apk --debug --no-pub` completed successfully after the refactor.
 - Android Gradle debug compilation completed successfully with Gradle 9.2.0.
 - The refactored source has no stale references to the removed inline color, channel, or diagnostics implementations.
 - Git whitespace validation passes with `git diff --check`.
+
+The repeatable test commands are:
+
+```powershell
+flutter analyze
+flutter test
+```
 
 ## Emulator checks completed
 

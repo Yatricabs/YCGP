@@ -146,7 +146,8 @@ class RidePersistence {
           (data['totalDistanceMeters'] as num?)?.toDouble();
       final double? prevLat = (data['previousLat'] as num?)?.toDouble();
       final double? prevLng = (data['previousLng'] as num?)?.toDouble();
-      if (totalDistance == null || prevLat == null || prevLng == null) return null;
+      if (totalDistance == null || prevLat == null || prevLng == null)
+        return null;
       final int? prevFixMillis = data['previousFixTimeMillis'] as int?;
       final DateTime prevFixTime = prevFixMillis == null
           ? DateTime.now()
@@ -175,8 +176,9 @@ class RidePersistence {
     }
   }
 
-  List<List<double>> _routeToJsonList(List<LatLng> points) =>
-      points.map((LatLng point) => <double>[point.latitude, point.longitude]).toList();
+  List<List<double>> _routeToJsonList(List<LatLng> points) => points
+      .map((LatLng point) => <double>[point.latitude, point.longitude])
+      .toList();
 
   String _encodeRoute(List<LatLng> points) {
     return jsonEncode(

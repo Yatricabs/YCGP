@@ -43,3 +43,7 @@ Run `flutter analyze`, then `flutter clean`, `flutter pub get`, and
 `flutter build apk --release`. Device validation should also cover screen
 locking, app removal from recents, a phone call during an active ride, and the
 SAF backup/reinstall recovery flow.
+
+The automated suite includes GPS acceptance/rejection cases, timezone-safe
+ride persistence recovery and clear tests, plus a 50,000-fix synthetic GPS
+stress test to catch runaway latency or state errors under heavy load.

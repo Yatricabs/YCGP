@@ -4,7 +4,8 @@ import 'package:flutter/services.dart';
 class SafBackupService {
   SafBackupService._();
 
-  static const MethodChannel _channel = MethodChannel('yatri_cabs/ride_service');
+  static const MethodChannel _channel =
+      MethodChannel('yatri_cabs/ride_service');
   static const String rideBackupFileName = 'active_ride_backup.json';
 
   static Future<bool> hasBackupFolder() async {

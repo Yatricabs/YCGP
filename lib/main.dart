@@ -273,7 +273,8 @@ class _RideScreenState extends State<RideScreen> {
       canvasSize.toInt(),
       canvasSize.toInt(),
     );
-    final ByteData? bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    final ByteData? bytes =
+        await image.toByteData(format: ui.ImageByteFormat.png);
     if (bytes == null || !mounted) return;
 
     setState(() {
@@ -384,7 +385,8 @@ class _RideScreenState extends State<RideScreen> {
         permission == LocationPermission.always;
   }
 
-  Future<void> _startRideTracking(Position startingPosition, {RideProgress? resumeFrom}) async {
+  Future<void> _startRideTracking(Position startingPosition,
+      {RideProgress? resumeFrom}) async {
     _positionSubscription?.cancel();
 
     if (resumeFrom != null) {
@@ -401,7 +403,9 @@ class _RideScreenState extends State<RideScreen> {
         EventSeverity.warning,
         'RIDE_RESUMED_AFTER_RESTART',
         'App restarted mid-ride and resumed from persisted progress.',
-        context: <String, dynamic>{'recoveredDistanceMeters': _totalDistanceMeters},
+        context: <String, dynamic>{
+          'recoveredDistanceMeters': _totalDistanceMeters
+        },
       ));
     } else {
       _totalDistanceMeters = 0.0;
@@ -453,9 +457,11 @@ class _RideScreenState extends State<RideScreen> {
     }
 
     _watchdogTimer?.cancel();
-    _watchdogTimer = Timer.periodic(const Duration(seconds: 30), _checkPositionStreamHealth);
+    _watchdogTimer =
+        Timer.periodic(const Duration(seconds: 30), _checkPositionStreamHealth);
     _nativeHealthTimer?.cancel();
-    _nativeHealthTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkNativeServiceHealth());
+    _nativeHealthTimer = Timer.periodic(
+        const Duration(seconds: 30), (_) => _checkNativeServiceHealth());
 
     if (resumeFrom == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -471,7 +477,8 @@ class _RideScreenState extends State<RideScreen> {
       (dynamic event) {
         if (event is! String) return;
         try {
-          final Map<String, dynamic> payload = jsonDecode(event) as Map<String, dynamic>;
+          final Map<String, dynamic> payload =
+              jsonDecode(event) as Map<String, dynamic>;
           final String type = payload['type']?.toString() ?? '';
           if (type == 'location') {
             _handleNativeLocation(payload);
@@ -491,7 +498,8 @@ class _RideScreenState extends State<RideScreen> {
           debugPrint('Native ride event parse error: $error');
         }
       },
-      onError: (Object error) => debugPrint('Native ride event channel error: $error'),
+      onError: (Object error) =>
+          debugPrint('Native ride event channel error: $error'),
     );
   }
 
@@ -499,10 +507,13 @@ class _RideScreenState extends State<RideScreen> {
     try {
       await _nativeRideBridge.invoke<void>('startRideService');
       await Future<void>.delayed(const Duration(milliseconds: 400));
-      final dynamic health = await _nativeRideBridge.invoke<dynamic>('getServiceHealth');
+      final dynamic health =
+          await _nativeRideBridge.invoke<dynamic>('getServiceHealth');
       if (health is String) {
-        final Map<String, dynamic> data = jsonDecode(health) as Map<String, dynamic>;
-        _nativeServiceActive = data['active'] == true && data['serviceAlive'] == true;
+        final Map<String, dynamic> data =
+            jsonDecode(health) as Map<String, dynamic>;
+        _nativeServiceActive =
+            data['active'] == true && data['serviceAlive'] == true;
       } else {
         _nativeServiceActive = true;
       }
@@ -520,7 +531,8 @@ class _RideScreenState extends State<RideScreen> {
 
   Future<void> _replayQueuedNativeLocations() async {
     try {
-      final dynamic queued = await _nativeRideBridge.invoke<dynamic>('drainQueuedLocations');
+      final dynamic queued =
+          await _nativeRideBridge.invoke<dynamic>('drainQueuedLocations');
       if (queued is! List) return;
       for (final dynamic raw in queued) {
         if (raw is String) {
@@ -538,7 +550,8 @@ class _RideScreenState extends State<RideScreen> {
 
   void _handleNativeLocation(Map<String, dynamic> payload) {
     if (!_rideActive) return;
-    final int timestampMs = (payload['timestamp'] as num?)?.toInt() ?? DateTime.now().millisecondsSinceEpoch;
+    final int timestampMs = (payload['timestamp'] as num?)?.toInt() ??
+        DateTime.now().millisecondsSinceEpoch;
     final Position position = Position(
       latitude: (payload['latitude'] as num).toDouble(),
       longitude: (payload['longitude'] as num).toDouble(),
@@ -568,11 +581,15 @@ class _RideScreenState extends State<RideScreen> {
   void _updateNativeNotification({bool force = false}) {
     if (!_nativeServiceActive) return;
     final DateTime now = DateTime.now();
-    if (!force && _lastNativeNotificationUpdate != null && now.difference(_lastNativeNotificationUpdate!) < const Duration(seconds: 5)) {
+    if (!force &&
+        _lastNativeNotificationUpdate != null &&
+        now.difference(_lastNativeNotificationUpdate!) <
+            const Duration(seconds: 5)) {
       return;
     }
     _lastNativeNotificationUpdate = now;
-    unawaited(_nativeRideBridge.invoke<void>('updateNotification', <String, dynamic>{
+    unawaited(
+        _nativeRideBridge.invoke<void>('updateNotification', <String, dynamic>{
       'distance': distanceText,
       'speed': '${_currentSpeedKmh.toStringAsFixed(0)} km/h',
       'status': _gpsSignalStatus,
@@ -584,13 +601,15 @@ class _RideScreenState extends State<RideScreen> {
   Future<void> _checkNativeServiceHealth() async {
     if (!_rideActive) return;
     try {
-      final dynamic raw = await _nativeRideBridge.invoke<dynamic>('getServiceHealth');
+      final dynamic raw =
+          await _nativeRideBridge.invoke<dynamic>('getServiceHealth');
       if (raw is! String) return;
       final Map<String, dynamic> data = jsonDecode(raw) as Map<String, dynamic>;
       final bool active = data['active'] == true;
       final bool alive = data['serviceAlive'] == true;
       final int lastFixAt = (data['lastFixAt'] as num?)?.toInt() ?? 0;
-      final int ageMs = lastFixAt > 0 ? DateTime.now().millisecondsSinceEpoch - lastFixAt : 0;
+      final int ageMs =
+          lastFixAt > 0 ? DateTime.now().millisecondsSinceEpoch - lastFixAt : 0;
       _nativeServiceActive = active && alive;
       if (!_nativeServiceActive) {
         unawaited(_eventLogger.log(
@@ -599,7 +618,8 @@ class _RideScreenState extends State<RideScreen> {
           'Active ride detected that the Android foreground service is no longer running; attempting recovery.',
         ));
         final bool restarted = await _startNativeForegroundService();
-        if (!restarted && mounted) setState(() => _status = 'Background service unavailable');
+        if (!restarted && mounted)
+          setState(() => _status = 'Background service unavailable');
       } else if (ageMs > 90 * 1000 && mounted) {
         setState(() => _status = 'GPS signal gap - service still active');
       }
@@ -676,8 +696,8 @@ class _RideScreenState extends State<RideScreen> {
   /// avoids restarting the stream (and its foreground-service handoff) on
   /// every single fix if speed is hovering right at the threshold.
   void _maybeAdjustPollInterval(Position current) {
-    final bool shouldSlowPoll =
-        current.speed >= 0 && current.speed < GpsFixValidator.stationarySpeedThresholdMps;
+    final bool shouldSlowPoll = current.speed >= 0 &&
+        current.speed < GpsFixValidator.stationarySpeedThresholdMps;
 
     if (_nativeServiceActive) return;
     if (shouldSlowPoll == _isSlowPollMode) return;
@@ -848,43 +868,57 @@ class _RideScreenState extends State<RideScreen> {
     if (!mounted) return;
     Map<String, dynamic> profile = <String, dynamic>{};
     try {
-      final dynamic raw = await _nativeRideBridge.invoke<dynamic>('getDeviceProfile');
+      final dynamic raw =
+          await _nativeRideBridge.invoke<dynamic>('getDeviceProfile');
       if (raw is Map) {
-        profile = raw.map((dynamic key, dynamic value) => MapEntry(key.toString(), value));
+        profile = raw.map(
+            (dynamic key, dynamic value) => MapEntry(key.toString(), value));
       }
     } catch (error) {
       debugPrint('Device profile lookup failed: $error');
     }
 
-    final String manufacturer = (profile['manufacturer'] ?? '').toString().toLowerCase();
+    final String manufacturer =
+        (profile['manufacturer'] ?? '').toString().toLowerCase();
     final String brand = (profile['brand'] ?? '').toString().toLowerCase();
     final String model = (profile['model'] ?? 'this phone').toString();
     final String family = [manufacturer, brand].join(' ');
 
     String guidance;
-    if (family.contains('xiaomi') || family.contains('redmi') || family.contains('poco')) {
-      guidance = 'Xiaomi/Redmi/POCO: keep YATRI unrestricted in Battery settings, allow Background Autostart where available, and avoid locking/force-stopping YATRI during an active ride.';
+    if (family.contains('xiaomi') ||
+        family.contains('redmi') ||
+        family.contains('poco')) {
+      guidance =
+          'Xiaomi/Redmi/POCO: keep YATRI unrestricted in Battery settings, allow Background Autostart where available, and avoid locking/force-stopping YATRI during an active ride.';
     } else if (family.contains('oppo')) {
-      guidance = 'OPPO/ColorOS: allow YATRI foreground/background activity and auto-launch where those controls are available. Do not force-stop the app during an active ride.';
+      guidance =
+          'OPPO/ColorOS: allow YATRI foreground/background activity and auto-launch where those controls are available. Do not force-stop the app during an active ride.';
     } else if (family.contains('realme')) {
-      guidance = 'realme UI: allow foreground activity, background activity and auto-launch for YATRI where available. Do not force-stop the app during an active ride.';
+      guidance =
+          'realme UI: allow foreground activity, background activity and auto-launch for YATRI where available. Do not force-stop the app during an active ride.';
     } else if (family.contains('samsung')) {
-      guidance = 'Samsung One UI: do not place YATRI in Sleeping or Deep Sleeping apps. Use the Never auto sleeping list for long active rides when needed.';
+      guidance =
+          'Samsung One UI: do not place YATRI in Sleeping or Deep Sleeping apps. Use the Never auto sleeping list for long active rides when needed.';
     } else if (family.contains('oneplus')) {
-      guidance = 'OnePlus/OxygenOS: avoid restrictive battery optimization for YATRI during active rides and keep background activity allowed.';
+      guidance =
+          'OnePlus/OxygenOS: avoid restrictive battery optimization for YATRI during active rides and keep background activity allowed.';
     } else if (family.contains('vivo')) {
-      guidance = 'vivo/Funtouch OS: allow normal background activity and any available auto-start/background-power permission for YATRI during active rides.';
+      guidance =
+          'vivo/Funtouch OS: allow normal background activity and any available auto-start/background-power permission for YATRI during active rides.';
     } else if (family.contains('lava')) {
-      guidance = 'Lava: behavior varies by model and Android build. Keep YATRI allowed to run in the background and do not force-stop it. This device should be included in field validation.';
+      guidance =
+          'Lava: behavior varies by model and Android build. Keep YATRI allowed to run in the background and do not force-stop it. This device should be included in field validation.';
     } else {
-      guidance = 'Android will keep the active location service visible with a persistent notification. Keep YATRI allowed to run in the background and avoid force-stopping it during an active ride.';
+      guidance =
+          'Android will keep the active location service visible with a persistent notification. Keep YATRI allowed to run in the background and avoid force-stopping it during an active ride.';
     }
 
     await showDialog<void>(
       context: context,
       builder: (BuildContext dialogContext) => AlertDialog(
         title: const Text('Background protection'),
-        content: Text('$model\n\n$guidance\n\nThe ride service is genuine Android foreground location work. No hidden keep-alive or fake activity is used.'),
+        content: Text(
+            '$model\n\n$guidance\n\nThe ride service is genuine Android foreground location work. No hidden keep-alive or fake activity is used.'),
         actions: <Widget>[
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
@@ -924,7 +958,8 @@ class _RideScreenState extends State<RideScreen> {
   }
 
   void _enterPictureInPicture() {
-    unawaited(_nativeRideBridge.invoke<void>('enterPip').catchError((Object error) {
+    unawaited(
+        _nativeRideBridge.invoke<void>('enterPip').catchError((Object error) {
       debugPrint('PiP request failed: $error');
     }));
   }
@@ -1021,11 +1056,17 @@ class _RideScreenState extends State<RideScreen> {
                           break;
                       }
                     },
-                    itemBuilder: (BuildContext context) => const <PopupMenuEntry<String>>[
-                      PopupMenuItem<String>(value: 'pip', child: Text('Minimize to PiP')),
-                      PopupMenuItem<String>(value: 'diagnostics', child: Text('Diagnostics log')),
-                      PopupMenuItem<String>(value: 'protection', child: Text('Background protection')),
-                      PopupMenuItem<String>(value: 'close', child: Text('Close YATRI CABS')),
+                    itemBuilder: (BuildContext context) =>
+                        const <PopupMenuEntry<String>>[
+                      PopupMenuItem<String>(
+                          value: 'pip', child: Text('Minimize to PiP')),
+                      PopupMenuItem<String>(
+                          value: 'diagnostics', child: Text('Diagnostics log')),
+                      PopupMenuItem<String>(
+                          value: 'protection',
+                          child: Text('Background protection')),
+                      PopupMenuItem<String>(
+                          value: 'close', child: Text('Close YATRI CABS')),
                     ],
                   ),
                 ),
@@ -1118,10 +1159,14 @@ class _RideScreenState extends State<RideScreen> {
                       children: <Widget>[
                         Text(
                           '${event.timestamp.toLocal()}  •  ${event.code}',
-                          style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 12),
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: color,
+                              fontSize: 12),
                         ),
                         const SizedBox(height: 2),
-                        Text(event.message, style: const TextStyle(fontSize: 13)),
+                        Text(event.message,
+                            style: const TextStyle(fontSize: 13)),
                       ],
                     );
                   },
@@ -1133,7 +1178,10 @@ class _RideScreenState extends State<RideScreen> {
               final bool granted = await SafBackupService.pickBackupFolder();
               if (dialogContext.mounted) {
                 ScaffoldMessenger.of(dialogContext).showSnackBar(
-                  SnackBar(content: Text(granted ? 'Backup folder set' : 'No folder selected')),
+                  SnackBar(
+                      content: Text(granted
+                          ? 'Backup folder set'
+                          : 'No folder selected')),
                 );
               }
             },
@@ -1141,8 +1189,10 @@ class _RideScreenState extends State<RideScreen> {
           ),
           TextButton(
             onPressed: () {
-              final String text = recent.map((AppEvent event) =>
-                  '${event.timestamp} [${event.severity.name}] ${event.code}: ${event.message}').join('\n\n');
+              final String text = recent
+                  .map((AppEvent event) =>
+                      '${event.timestamp} [${event.severity.name}] ${event.code}: ${event.message}')
+                  .join('\n\n');
               Clipboard.setData(ClipboardData(text: text));
               ScaffoldMessenger.of(dialogContext).showSnackBar(
                 const SnackBar(content: Text('Copied to clipboard')),
@@ -1337,7 +1387,8 @@ class _RideScreenState extends State<RideScreen> {
                       borderRadius: BorderRadius.all(Radius.circular(8)),
                     ),
                     child: Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                      padding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                       child: Text(
                         'Getting GPS location...',
                         style: TextStyle(fontWeight: FontWeight.w600),
@@ -1517,7 +1568,7 @@ class _RideScreenState extends State<RideScreen> {
     return SizedBox(
       height: 82,
       child: Container(
-                color: AppColors.green,
+        color: AppColors.green,
         child: Stack(
           clipBehavior: Clip.none,
           alignment: Alignment.center,
