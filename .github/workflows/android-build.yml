@@ -85,7 +85,7 @@ jobs:
 
       - name: Verify generated APK
         run: |
-          APK="android/app/build/outputs/apk/release/app-release.apk"
+          APK="build/app/outputs/apk/release/app-release.apk"
           if [ ! -f "$APK" ]; then
             echo "ERROR: app-release.apk was not generated at the expected AGP output path."
             echo "All APKs found in workspace:"
@@ -99,7 +99,7 @@ jobs:
       - name: Prepare APK artifact
         run: |
           mkdir -p artifacts
-          cp android/app/build/outputs/apk/release/app-release.apk \
+          cp build/app/outputs/apk/release/app-release.apk \
             "artifacts/yatri-cabs-${{ github.ref_name }}.apk"
           ls -lh artifacts/
 
