@@ -50,6 +50,17 @@
 
 # Changelog
 
+### Current workspace - reliability merge and code organization
+**What:** Merged the reliability/SAF backup work from the updated project
+archive, including native crash and service diagnostics, GPS-stall recovery,
+public active-ride notifications, Android PiP auto-enter behavior, and the
+two-tier ride persistence path. Reorganized the Dart code into `core/` and
+`services/` boundaries for shared configuration, native channels, diagnostics,
+and SAF backup access. Updated build, reliability, and validation documentation
+to match the current Gradle/Flutter workspace and verified emulator behavior.
+**Why:** Keeps platform behavior and recovery guarantees intact while making
+the ride screen easier to maintain and the documented validation status honest.
+
 Every entry explains **what changed** and **why it matters for YATRI
 CABS specifically** - intercity rides through hills, dense forest, and
 other remote no-network stretches, billed purely from GPS.

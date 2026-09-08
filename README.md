@@ -12,7 +12,13 @@ GPS is the *only* signal available.
 
 ```
 lib/
-  main.dart              - UI + ride lifecycle (screen, buttons, map, state)
+  main.dart              - ride screen UI and lifecycle orchestration
+  core/
+    app_constants.dart   - shared colors and ride configuration
+  services/
+    native_ride_bridge.dart  - Flutter/native ride channel bridge
+    native_diagnostics.dart  - native event import into the Dart event log
+    saf_backup_service.dart  - Android SAF backup wrapper
   gps_validator.dart      - decides whether a GPS fix should count toward billing
   ride_persistence.dart   - saves/restores ride progress to local storage
   event_logger.dart       - records anomalies locally and queues them for backend sync
@@ -33,6 +39,11 @@ The GPS-fix-validation logic and the local-storage logic are each in
 their own file (rather than inline in `main.dart`) specifically so they
 can be unit-tested and reasoned about independently of the UI - this is
 billing logic, and it should be possible to verify it in isolation.
+
+Platform-channel and shared configuration code is also kept outside the ride
+screen. This keeps `main.dart` focused on screen state and orchestration while
+the Android bridge, diagnostics import, and SAF backup wrapper remain reusable
+services.
 
 ---
 

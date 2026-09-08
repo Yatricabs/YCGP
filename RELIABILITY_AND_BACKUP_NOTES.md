@@ -3,6 +3,23 @@
 This release adds crash diagnostics, foreground-service recovery, and an
 Android Storage Access Framework backup for an active ride.
 
+## Current code organization
+
+- `lib/core/app_constants.dart` owns shared colors and ride configuration.
+- `lib/services/native_ride_bridge.dart` owns Flutter/native channel names and
+  calls.
+- `lib/services/native_diagnostics.dart` imports native crash and service events
+  into the shared Dart event log.
+- `lib/services/saf_backup_service.dart` wraps the Android Storage Access
+  Framework calls used by ride persistence.
+- `lib/ride_persistence.dart` owns the two-tier SharedPreferences/SAF ride
+  recovery path.
+- `lib/main.dart` remains the ride screen and orchestration layer; platform
+  channel details and shared constants are no longer embedded there.
+- Android platform responsibilities remain under the package
+  `com.yatricabs.gpsbilling`: activity bridge, foreground service, SAF manager,
+  and application crash handler.
+
 ## Changes
 
 - Dart and native uncaught errors are captured in the in-app diagnostics log.
@@ -12,12 +29,17 @@ Android Storage Access Framework backup for an active ride.
 - Active-ride notifications are explicitly public on the lock screen.
 - SharedPreferences remains the fast primary recovery store. A driver-selected
   SAF folder receives a JSON mirror and is used as a fallback after reinstall.
+- Android PiP is configured proactively for home/task switching on Android 12+
+  and retains a manual fallback on older supported versions.
+- Android 13+ notification permission is requested before starting the ride
+  service, and the active ride uses a public notification channel.
 
 The folder picker requires driver consent. Android revokes the persisted grant
 after uninstall, so the folder must be selected again after reinstall.
 
 ## Validation
 
-Run `flutter analyze` and `flutter build apk --debug`. Device validation should
-also cover screen locking, app removal from recents, a phone call during an
-active ride, and the SAF backup/reinstall recovery flow.
+Run `flutter analyze`, then `flutter clean`, `flutter pub get`, and
+`flutter build apk --release`. Device validation should also cover screen
+locking, app removal from recents, a phone call during an active ride, and the
+SAF backup/reinstall recovery flow.

@@ -13,7 +13,10 @@ import 'package:flutter/services.dart';
 import 'event_logger.dart';
 import 'gps_validator.dart';
 import 'ride_persistence.dart';
-import 'saf_backup_service.dart';
+import 'core/app_constants.dart';
+import 'services/native_diagnostics.dart';
+import 'services/native_ride_bridge.dart';
+import 'services/saf_backup_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,17 +57,11 @@ class YatriCabsApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         fontFamily: 'Roboto',
-        colorScheme: ColorScheme.fromSeed(seedColor: YatriColors.green),
+        colorScheme: ColorScheme.fromSeed(seedColor: AppColors.green),
       ),
       home: const RideScreen(),
     );
   }
-}
-
-class YatriColors {
-  static const green = Color(0xFF58B436);
-  static const background = Color(0xFFFFF9FF);
-  static const dark = Color(0xFF343434);
 }
 
 class RideScreen extends StatefulWidget {
@@ -80,12 +77,8 @@ class _RideScreenState extends State<RideScreen> {
   // Estimated distance is intentionally hard-coded.
   // It is NOT changed by GPS.
   // ------------------------------------------------------------
-  static const double estimatedKm = 291.0;
-
   // Fallback only for drawing the map before browser/device GPS
   // becomes available. It does NOT count toward billing distance.
-  static const LatLng fallbackLocation = LatLng(26.8467, 80.9462);
-
   GoogleMapController? _mapController;
   StreamSubscription<Position>? _positionSubscription;
   double? _previousLat;
@@ -96,8 +89,7 @@ class _RideScreenState extends State<RideScreen> {
   DateTime? _lastPollModeSwitchAt;
   bool _highDistanceWarningLogged = false;
   Timer? _watchdogTimer;
-  static const MethodChannel _nativeRideChannel = MethodChannel('yatri_cabs/ride_service');
-  static const EventChannel _nativeRideEvents = EventChannel('yatri_cabs/ride_events');
+  static const NativeRideBridge _nativeRideBridge = NativeRideBridge.instance;
   StreamSubscription<dynamic>? _nativeEventSubscription;
   bool _nativeServiceActive = false;
   DateTime? _lastNativeNotificationUpdate;
@@ -105,8 +97,10 @@ class _RideScreenState extends State<RideScreen> {
   final GpsFixValidator _validator = GpsFixValidator();
   final RidePersistence _persistence = RidePersistence();
   final EventLogger _eventLogger = EventLogger();
+  final NativeDiagnostics _nativeDiagnostics =
+      NativeDiagnostics(NativeRideBridge.instance);
 
-  LatLng _mapCenter = fallbackLocation;
+  LatLng _mapCenter = RideConfig.fallbackLocation;
   LatLng? _currentLocation;
 
   final List<LatLng> _routePoints = <LatLng>[];
@@ -172,55 +166,8 @@ class _RideScreenState extends State<RideScreen> {
     super.initState();
     _generateCarIcon();
     _listenToNativeRideService();
-    unawaited(_importNativeDiagnostics());
+    unawaited(_nativeDiagnostics.importInto(_eventLogger));
     _initializeRide();
-  }
-
-  Future<void> _importNativeDiagnostics() async {
-    try {
-      final dynamic raw =
-          await _nativeRideChannel.invokeMethod<dynamic>('getDiagnosticsLog');
-      if (raw is! String) return;
-      final List<dynamic> entries = jsonDecode(raw) as List<dynamic>;
-      for (final dynamic rawEntry in entries) {
-        final Map<String, dynamic> entry = rawEntry as Map<String, dynamic>;
-        final String type = entry['type'] as String? ?? 'NATIVE_EVENT';
-        final int timestampMs = entry['timestamp'] as int? ?? 0;
-        final Map<String, dynamic>? detail =
-            entry['detail'] as Map<String, dynamic>?;
-        await _eventLogger.log(
-          EventSeverity.critical,
-          type,
-          _describeNativeDiagnostic(type, detail),
-          context: <String, dynamic>{
-            if (timestampMs > 0)
-              'nativeTimestamp':
-                  DateTime.fromMillisecondsSinceEpoch(timestampMs).toIso8601String(),
-            if (detail != null) ...detail,
-          },
-        );
-      }
-      if (entries.isNotEmpty) {
-        await _nativeRideChannel.invokeMethod<dynamic>('clearDiagnosticsLog');
-      }
-    } catch (error) {
-      debugPrint('Failed to import native diagnostics: $error');
-    }
-  }
-
-  String _describeNativeDiagnostic(String type, Map<String, dynamic>? detail) {
-    switch (type) {
-      case 'SERVICE_KILLED_UNEXPECTEDLY':
-        return 'Ride tracking service was killed unexpectedly.';
-      case 'APP_SWIPED_FROM_RECENTS':
-        return 'App was swiped away while a ride was active.';
-      case 'GPS_FIX_STALLED_AUTO_RECOVERED':
-        return 'GPS delivery stalled and tracking restarted automatically.';
-      case 'NATIVE_CRASH':
-        return 'Native app crash: ${detail?['exceptionClass'] ?? 'unknown'}';
-      default:
-        return 'Native event: $type';
-    }
   }
 
   Future<void> _ensureBackupFolderConfigured() async {
@@ -520,7 +467,7 @@ class _RideScreenState extends State<RideScreen> {
 
   Future<void> _listenToNativeRideService() async {
     _nativeEventSubscription?.cancel();
-    _nativeEventSubscription = _nativeRideEvents.receiveBroadcastStream().listen(
+    _nativeEventSubscription = _nativeRideBridge.events.listen(
       (dynamic event) {
         if (event is! String) return;
         try {
@@ -550,9 +497,9 @@ class _RideScreenState extends State<RideScreen> {
 
   Future<bool> _startNativeForegroundService() async {
     try {
-      await _nativeRideChannel.invokeMethod<void>('startRideService');
+      await _nativeRideBridge.invoke<void>('startRideService');
       await Future<void>.delayed(const Duration(milliseconds: 400));
-      final dynamic health = await _nativeRideChannel.invokeMethod<dynamic>('getServiceHealth');
+      final dynamic health = await _nativeRideBridge.invoke<dynamic>('getServiceHealth');
       if (health is String) {
         final Map<String, dynamic> data = jsonDecode(health) as Map<String, dynamic>;
         _nativeServiceActive = data['active'] == true && data['serviceAlive'] == true;
@@ -573,7 +520,7 @@ class _RideScreenState extends State<RideScreen> {
 
   Future<void> _replayQueuedNativeLocations() async {
     try {
-      final dynamic queued = await _nativeRideChannel.invokeMethod<dynamic>('drainQueuedLocations');
+      final dynamic queued = await _nativeRideBridge.invoke<dynamic>('drainQueuedLocations');
       if (queued is! List) return;
       for (final dynamic raw in queued) {
         if (raw is String) {
@@ -611,7 +558,7 @@ class _RideScreenState extends State<RideScreen> {
 
   Future<void> _stopNativeForegroundService() async {
     try {
-      await _nativeRideChannel.invokeMethod<void>('stopRideService');
+      await _nativeRideBridge.invoke<void>('stopRideService');
     } catch (error) {
       debugPrint('Native foreground service stop failed: $error');
     }
@@ -625,7 +572,7 @@ class _RideScreenState extends State<RideScreen> {
       return;
     }
     _lastNativeNotificationUpdate = now;
-    unawaited(_nativeRideChannel.invokeMethod<void>('updateNotification', <String, dynamic>{
+    unawaited(_nativeRideBridge.invoke<void>('updateNotification', <String, dynamic>{
       'distance': distanceText,
       'speed': '${_currentSpeedKmh.toStringAsFixed(0)} km/h',
       'status': _gpsSignalStatus,
@@ -637,7 +584,7 @@ class _RideScreenState extends State<RideScreen> {
   Future<void> _checkNativeServiceHealth() async {
     if (!_rideActive) return;
     try {
-      final dynamic raw = await _nativeRideChannel.invokeMethod<dynamic>('getServiceHealth');
+      final dynamic raw = await _nativeRideBridge.invoke<dynamic>('getServiceHealth');
       if (raw is! String) return;
       final Map<String, dynamic> data = jsonDecode(raw) as Map<String, dynamic>;
       final bool active = data['active'] == true;
@@ -824,7 +771,7 @@ class _RideScreenState extends State<RideScreen> {
         // own. Doesn't block billing - just flags it for a human to
         // review, since the estimate itself can legitimately be off.
         if (!_highDistanceWarningLogged &&
-            distanceCoveredKm > estimatedKm * 2.5) {
+            distanceCoveredKm > RideConfig.estimatedKm * 2.5) {
           _highDistanceWarningLogged = true;
           unawaited(
             _eventLogger.log(
@@ -832,10 +779,10 @@ class _RideScreenState extends State<RideScreen> {
               'DISTANCE_EXCEEDS_ESTIMATE',
               'Distance covered (${distanceCoveredKm.toStringAsFixed(1)}km) '
                   'is more than 2.5x the estimated distance '
-                  '(${estimatedKm.toStringAsFixed(0)}km) - needs review.',
+                  '(${RideConfig.estimatedKm.toStringAsFixed(0)}km) - needs review.',
               context: <String, dynamic>{
                 'distanceCoveredKm': distanceCoveredKm,
-                'estimatedKm': estimatedKm,
+                'estimatedKm': RideConfig.estimatedKm,
               },
             ),
           );
@@ -901,7 +848,7 @@ class _RideScreenState extends State<RideScreen> {
     if (!mounted) return;
     Map<String, dynamic> profile = <String, dynamic>{};
     try {
-      final dynamic raw = await _nativeRideChannel.invokeMethod<dynamic>('getDeviceProfile');
+      final dynamic raw = await _nativeRideBridge.invoke<dynamic>('getDeviceProfile');
       if (raw is Map) {
         profile = raw.map((dynamic key, dynamic value) => MapEntry(key.toString(), value));
       }
@@ -972,12 +919,12 @@ class _RideScreenState extends State<RideScreen> {
       ),
     );
     if (close == true) {
-      await _nativeRideChannel.invokeMethod<void>('closeTask');
+      await _nativeRideBridge.invoke<void>('closeTask');
     }
   }
 
   void _enterPictureInPicture() {
-    unawaited(_nativeRideChannel.invokeMethod<void>('enterPip').catchError((Object error) {
+    unawaited(_nativeRideBridge.invoke<void>('enterPip').catchError((Object error) {
       debugPrint('PiP request failed: $error');
     }));
   }
@@ -1035,7 +982,7 @@ class _RideScreenState extends State<RideScreen> {
         }
       },
       child: Scaffold(
-        backgroundColor: YatriColors.background,
+        backgroundColor: AppColors.background,
         body: SafeArea(
           child: Stack(
             children: <Widget>[
@@ -1097,7 +1044,7 @@ class _RideScreenState extends State<RideScreen> {
   /// shows a minimal floating window during turn-by-turn navigation.
   Widget _buildPipView() {
     return Scaffold(
-      backgroundColor: YatriColors.background,
+      backgroundColor: AppColors.background,
       body: Stack(
         fit: StackFit.expand,
         children: <Widget>[
@@ -1122,7 +1069,7 @@ class _RideScreenState extends State<RideScreen> {
             right: 0,
             bottom: 0,
             child: Container(
-              color: YatriColors.green,
+              color: AppColors.green,
               padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
               child: Text(
                 '$distanceText  •  ${_currentSpeedKmh.toStringAsFixed(0)} km/h',
@@ -1142,7 +1089,7 @@ class _RideScreenState extends State<RideScreen> {
 
   Future<void> _showDiagnosticsLogViewer() async {
     if (!mounted) return;
-    await _importNativeDiagnostics();
+    await _nativeDiagnostics.importInto(_eventLogger);
     final List<AppEvent> events = await _eventLogger.getPendingEvents();
     final List<AppEvent> recent = events.reversed.toList();
     if (!mounted) return;
@@ -1164,7 +1111,7 @@ class _RideScreenState extends State<RideScreen> {
                     final Color color = switch (event.severity) {
                       EventSeverity.critical => Colors.red,
                       EventSeverity.warning => Colors.orange,
-                      EventSeverity.info => YatriColors.dark,
+                      EventSeverity.info => AppColors.dark,
                     };
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1243,7 +1190,7 @@ class _RideScreenState extends State<RideScreen> {
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: YatriColors.green,
+                  color: AppColors.green,
                   boxShadow: <BoxShadow>[
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.16),
@@ -1285,7 +1232,7 @@ class _RideScreenState extends State<RideScreen> {
       width: 24,
       height: 3,
       margin: const EdgeInsets.only(bottom: 27),
-      color: YatriColors.green,
+      color: AppColors.green,
     );
   }
 
@@ -1301,7 +1248,7 @@ class _RideScreenState extends State<RideScreen> {
               height: 85,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: YatriColors.green,
+                color: AppColors.green,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: Colors.white, width: 2),
                 boxShadow: <BoxShadow>[
@@ -1426,7 +1373,7 @@ class _RideScreenState extends State<RideScreen> {
                     style: const TextStyle(
                       fontSize: 11.5,
                       fontWeight: FontWeight.w600,
-                      color: YatriColors.dark,
+                      color: AppColors.dark,
                     ),
                   ),
                 ),
@@ -1449,7 +1396,7 @@ class _RideScreenState extends State<RideScreen> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: YatriColors.green,
+            color: AppColors.green,
             borderRadius: BorderRadius.circular(10),
             boxShadow: <BoxShadow>[
               BoxShadow(
@@ -1506,9 +1453,9 @@ class _RideScreenState extends State<RideScreen> {
       margin: const EdgeInsets.symmetric(horizontal: 15),
       padding: const EdgeInsets.fromLTRB(14, 9, 14, 10),
       decoration: BoxDecoration(
-        color: YatriColors.background,
+        color: AppColors.background,
         borderRadius: BorderRadius.circular(7),
-        border: Border.all(color: YatriColors.green, width: 2),
+        border: Border.all(color: AppColors.green, width: 2),
       ),
       child: Column(
         children: <Widget>[
@@ -1520,15 +1467,15 @@ class _RideScreenState extends State<RideScreen> {
                 style: TextStyle(
                   fontSize: 19,
                   fontWeight: FontWeight.w600,
-                  color: YatriColors.dark,
+                  color: AppColors.dark,
                 ),
               ),
               Text(
-                '${estimatedKm.toStringAsFixed(0)} KM',
+                '${RideConfig.estimatedKm.toStringAsFixed(0)} KM',
                 style: const TextStyle(
                   fontSize: 19,
                   fontWeight: FontWeight.w600,
-                  color: YatriColors.dark,
+                  color: AppColors.dark,
                 ),
               ),
             ],
@@ -1546,7 +1493,7 @@ class _RideScreenState extends State<RideScreen> {
                   style: TextStyle(
                     fontSize: 25,
                     fontWeight: FontWeight.w600,
-                    color: YatriColors.dark,
+                    color: AppColors.dark,
                   ),
                 ),
               ),
@@ -1556,7 +1503,7 @@ class _RideScreenState extends State<RideScreen> {
                 style: const TextStyle(
                   fontSize: 25,
                   fontWeight: FontWeight.w600,
-                  color: YatriColors.dark,
+                  color: AppColors.dark,
                 ),
               ),
             ],
@@ -1570,7 +1517,7 @@ class _RideScreenState extends State<RideScreen> {
     return SizedBox(
       height: 82,
       child: Container(
-        color: YatriColors.green,
+                color: AppColors.green,
         child: Stack(
           clipBehavior: Clip.none,
           alignment: Alignment.center,
@@ -1606,7 +1553,7 @@ class _RideScreenState extends State<RideScreen> {
                 ),
                 child: const Icon(
                   Icons.phone,
-                  color: YatriColors.green,
+                  color: AppColors.green,
                   size: 38,
                 ),
               ),
