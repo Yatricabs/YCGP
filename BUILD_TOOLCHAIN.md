@@ -27,6 +27,10 @@ cd ..
 flutter build apk --release
 ```
 
+GitHub Actions installs and accepts the Android SDK licenses, then explicitly
+installs the required `ndk;30.0.16138531` package before Gradle runs. The CI
+workflow also uses Flutter 3.47.2 and Gradle 9.2.0 to match this workspace.
+
 Expected APK:
 `build\app\outputs\flutter-apk\app-release.apk`
 

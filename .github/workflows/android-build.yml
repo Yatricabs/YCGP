@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - dev
+      - Dev
   workflow_dispatch: {}
 
 jobs:
@@ -25,8 +25,16 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: "3.32.0"
+          flutter-version: "3.47.2"
           cache: true
+
+      - name: Set up Android SDK and accept licenses
+        uses: android-actions/setup-android@v3
+
+      - name: Install required Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;30.0.16138531"
 
       - name: Show tool versions
         run: |
@@ -37,10 +45,10 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Set up Gradle 8.14
+      - name: Set up Gradle 9.2.0
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.14"
+          gradle-version: "9.2.0"
 
       - name: Prepare CI Android properties
         run: |
@@ -51,7 +59,7 @@ jobs:
 
       - name: Generate Gradle Wrapper
         working-directory: android
-        run: gradle wrapper --gradle-version 8.14 --distribution-type bin
+        run: gradle wrapper --gradle-version 9.2.0 --distribution-type bin
 
       - name: Fix Gradle Wrapper permissions
         run: chmod +x android/gradlew
